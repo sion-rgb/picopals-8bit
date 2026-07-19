@@ -1,0 +1,18 @@
+{
+  "name": "PicoPals 8-Bit／像素萌寵日記",
+  "short_name": "PicoPals",
+  "description": "一款原創、可離線遊玩的 8-bit 像素電子寵物。",
+  "lang": "zh-Hant-HK",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#fff8f3",
+  "theme_color": "#d989b5",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    {"src":"icons/icon-192.png","sizes":"192x192","type":"image/png","purpose":"any"},
+    {"src":"icons/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any"},
+    {"src":"icons/icon-maskable-512.png","sizes":"512x512","type":"image/png","purpose":"maskable"}
+  ]
+}

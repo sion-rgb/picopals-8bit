@@ -1,0 +1,4 @@
+type Sound="move"|"confirm"|"back"|"eat"|"clean"|"coin"|"success"|"fail"|"gift"|"sick"|"evolve"|"wedding"|"sleep";
+const notes:Record<Sound,number[]>={move:[520],confirm:[660,880],back:[440,330],eat:[300,360,420],clean:[720,920],coin:[880,1170],success:[523,659,784,1046],fail:[330,260],gift:[660,880,990],sick:[280,220],evolve:[440,554,659,880],wedding:[523,659,784,988,1046],sleep:[392,330]};
+let ctx:AudioContext|undefined;
+export function playSound(name:Sound,volume=.18){if(volume<=0)return;ctx??=new AudioContext();void ctx.resume();notes[name].forEach((freq,i)=>{const o=ctx!.createOscillator(),g=ctx!.createGain();o.type="square";o.frequency.value=freq;g.gain.setValueAtTime(volume,ctx!.currentTime+i*.09);g.gain.exponentialRampToValueAtTime(.001,ctx!.currentTime+i*.09+.08);o.connect(g).connect(ctx!.destination);o.start(ctx!.currentTime+i*.09);o.stop(ctx!.currentTime+i*.09+.09)})}

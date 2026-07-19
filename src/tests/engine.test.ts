@@ -1,0 +1,34 @@
+import {beforeEach,describe,expect,it} from "vitest";
+import {foods,gifts,npcs} from "../data";
+import {advanceTime,applyGameResult,buy,canMarry,chooseEvolution,clamp,cleanPet,createGame,createPet,feedPet,giveGift,marry,memorialize} from "../engine";
+import {db,importSave,loadSave,persistSave} from "../db";
+import type {SaveFile} from "../types";
+
+const food=(id:string)=>foods.find(f=>f.id===id)!;
+describe("PicoPals 純函式遊戲引擎",()=>{
+ it("1. 餵食後正確更新數值",()=>{const p=feedPet(createPet(),food("rice"));expect(p.fullness).toBe(100);expect(p.weight).toBe(2.9)});
+ it("2. 數值保持在 0 至 100",()=>{expect(clamp(140)).toBe(100);expect(clamp(-4)).toBe(0)});
+ it("3. 遊戲降低飽足及體重",()=>{const p=createPet(),n=applyGameResult(p,20);expect(n.fullness).toBeLessThan(p.fullness);expect(n.weight).toBeLessThan(p.weight)});
+ it("4. 過量零食增加風險",()=>{const p={...createPet(),snacksToday:3},n=feedPet(p,food("candy"));expect(n.health).toBeLessThan(p.health);expect(n.behaviorTags.sweetTooth).toBeGreaterThan(1)});
+ it("5. 穢物會被清理並提升清潔",()=>{const p={...createPet(),poopCount:3,cleanliness:20},n=cleanPet(p,"poop");expect(n.poopCount).toBe(0);expect(n.cleanliness).toBe(45)});
+ it("6. 低清潔及穢物會增加生病風險",()=>{const p={...createPet(),cleanliness:10,poopCount:4,lastUpdatedAt:0},n=advanceTime(p,7200000).pet;expect(n.isSick).toBe(true)});
+ it("7. 離線兩小時正確聚合更新",()=>{const p={...createPet(0),lastUpdatedAt:0},r=advanceTime(p,7200000);expect(r.pet.ageMinutes).toBe(120);expect(r.pet.fullness).toBeCloseTo(66.6);expect(r.summary.minutes).toBe(120)});
+ it("8. 系統時間倒退不令年齡倒退",()=>{const p={...createPet(10000),ageMinutes:30,lastUpdatedAt:10000},r=advanceTime(p,5000);expect(r.pet.ageMinutes).toBe(30);expect(r.summary.clockAnomaly).toBe(true)});
+ it("9. 達條件後由蛋進化",()=>{const p={...createPet(0),ageMinutes:1};expect(advanceTime(p,0).pet.speciesId).toBe("pomu")});
+ it("10. 不同照顧方式產生不同進化",()=>{const base={...createPet(),stage:"child" as const,speciesId:"berrybun",ageMinutes:999,idealWeightMin:5,idealWeightMax:7};expect(chooseEvolution({...base,health:95,happiness:95,cleanliness:95}).id).not.toBe(chooseEvolution({...base,health:25,happiness:25,cleanliness:25,careMistakes:5}).id)});
+ it("11. 金幣不會變成負數",()=>{expect(buy(3,5)).toEqual({ok:false,coins:3})});
+ it("12. 餘額足夠可購買",()=>{expect(buy(20,5)).toEqual({ok:true,coins:15})});
+ it("13. 喜歡的禮物正確增加感情",()=>{const r=giveGift({npcId:"aro",affection:0,gifts:[]},gifts.find(g=>g.id==="token")!,npcs[0]!);expect(r.affection).toBe(7)});
+ it("14. 不喜歡的禮物只增加少量感情",()=>{const r=giveGift({npcId:"aro",affection:0,gifts:[]},gifts.find(g=>g.id==="book")!,npcs[0]!);expect(r.affection).toBe(2)});
+ it("15. 達成條件後可求婚",()=>{const p={...createPet(),stage:"adult" as const,health:80,happiness:80},r={npcId:"aro",affection:95,gifts:[]};expect(canMarry(p,r,true)).toBe(true);expect(marry(p,r,true).spouseNpcId).toBe("aro")});
+ it("16. 未成年寵物不能結婚",()=>{expect(canMarry(createPet(),{npcId:"aro",affection:100,gifts:[]},true)).toBe(false)});
+ it("17. 離世後加入星光紀念冊",()=>{const pet={...createPet(),isAlive:false};const s=memorialize({schemaVersion:1,exportedAt:0,pet,game:createGame(),inventory:[],relationships:[],album:[],achievements:[],settings:{}});expect(s.game.history).toHaveLength(1)});
+ it("18. 飽足達 95 時拒絕餵食",()=>{const p={...createPet(),fullness:95};expect(feedPet(p,food("rice"))).toBe(p)});
+ it("19. 穢物最多顯示五件",()=>{const p={...createPet(0),lastUpdatedAt:0,poopCount:4,mealsToday:5};expect(advanceTime(p,86400000).pet.poopCount).toBe(5)});
+ it("20. 遊戲後數值仍受上下限保護",()=>{const p={...createPet(),happiness:99,fullness:2,energy:2};const n=applyGameResult(p,999);expect(n.happiness).toBe(100);expect(n.fullness).toBe(0);expect(n.energy).toBe(0)});
+});
+describe("IndexedDB 存檔",()=>{beforeEach(async()=>{await db.delete();await db.open()});const sample=():SaveFile=>({schemaVersion:1,exportedAt:1,pet:createPet(1),game:createGame(1),inventory:[],relationships:[],album:["stardust-egg"],achievements:[],settings:{theme:"mint"}});
+ it("21. 存檔後讀取一致",async()=>{const s=sample();await persistSave(s);const r=await loadSave();expect(r?.pet.id).toBe(s.pet.id);expect(r?.settings.theme).toBe("mint")});
+ it("22. JSON 匯入成功",async()=>{const s=sample();s.pet.name="星星";await importSave(JSON.parse(JSON.stringify(s)));expect((await loadSave())?.pet.name).toBe("星星")});
+ it("23. 錯誤 schema 不能覆蓋存檔",async()=>{const s=sample();await persistSave(s);await expect(importSave({...s,schemaVersion:2})).rejects.toThrow("存檔版本不相容");expect((await loadSave())?.pet.id).toBe(s.pet.id)});
+});

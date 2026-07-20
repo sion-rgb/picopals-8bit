@@ -1,4 +1,4 @@
-const VERSION="picopals-v1.0.0";
+const VERSION="picopals-v2.0.0";
 const base=new URL(self.registration.scope).pathname;
 const shell=[base,`${base}index.html`,`${base}manifest.webmanifest`,`${base}offline.html`,`${base}icons/icon-192.png`,`${base}icons/icon-512.png`];
 self.addEventListener("install",event=>event.waitUntil(caches.open(VERSION).then(cache=>cache.addAll(shell))));

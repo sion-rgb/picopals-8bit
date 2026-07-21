@@ -74,6 +74,12 @@ a:focus-visible {
   --screen: #b7c69f;
   --soft: #e6eadb;
 }
+.theme-starlight {
+  --device: #6658a8;
+  --device2: #3f356f;
+  --screen: #cbe6dc;
+  --soft: #ece6ff;
+}
 .readable {
   font-family: system-ui, "Noto Sans TC", sans-serif;
 }

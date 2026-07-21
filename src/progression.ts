@@ -84,7 +84,9 @@ export function claimDailyReward(save: SaveFile, now = Date.now()) {
     return { ok: false, save, reason: "完成三項任務後即可領獎。" };
   const streak =
       state.lastClaimedDate === priorDate(state.date) ? state.streak + 1 : 1,
-    unlock = streak === 7 ? "streak-wallpaper" : undefined;
+    unlock = streak === 7 ? "streak-wallpaper" : undefined,
+    gift = streak === 3,
+    giftRow = save.inventory.find((item) => item.itemId === "plush");
   const next: SaveFile = {
     ...save,
     game: { ...save.game, coins: save.game.coins + 20 },
@@ -99,6 +101,24 @@ export function claimDailyReward(save: SaveFile, now = Date.now()) {
     unlockedDecor: unlock
       ? [...new Set([...save.unlockedDecor, unlock])]
       : save.unlockedDecor,
+    inventory: gift
+      ? giftRow
+        ? save.inventory.map((item) =>
+            item.id === giftRow.id
+              ? { ...item, quantity: item.quantity + 1 }
+              : item,
+          )
+        : [
+            ...save.inventory,
+            { id: "gift:plush", itemId: "plush", quantity: 1 },
+          ]
+      : save.inventory,
+    legacyTraits:
+      streak === 14
+        ? { ...save.legacyTraits, cosmetic: "shell" }
+        : save.legacyTraits,
+    settings:
+      streak === 30 ? { ...save.settings, theme: "starlight" } : save.settings,
     achievements: [
       ...new Set([
         ...save.achievements,

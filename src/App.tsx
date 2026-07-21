@@ -115,6 +115,7 @@ const themes: Record<string, string> = {
   mint: "薄荷綠",
   cream: "奶油白",
   lcd: "復古灰綠",
+  starlight: "三十日星光",
 };
 const relationshipSeed = () =>
   npcs.map((n) => ({ npcId: n.id, affection: 0, gifts: [] }));
@@ -269,7 +270,14 @@ export function App() {
             r.summary.clockAnomaly)
         )
           setOffline(r.summary);
-        return r.save;
+        const withDaily = {
+          ...r.save,
+          dailyMissions: generateDailyMissions(
+            Date.now(),
+            r.save.dailyMissions,
+          ),
+        };
+        return { ...withDaily, socialFeed: generateSocialFeed(withDaily) };
       }),
     [],
   );
@@ -1465,7 +1473,9 @@ function BagPanel({
             <button
               key={id}
               disabled={!owned}
-              onClick={() => setSave(equipDecor(save, id))}
+              onClick={() =>
+                setSave(recordMission(equipDecor(save, id), "decor"))
+              }
             >
               <i>{item.icon}</i>
               <b>{item.name}</b>
@@ -2025,7 +2035,18 @@ function Onboarding({
           className="primary"
           disabled={!name.trim()}
           onClick={() => {
-            setSave({ ...save, pet: { ...save.pet, name: name.trim() } });
+            const named = { ...save, pet: { ...save.pet, name: name.trim() } };
+            const namedProgress = completeOnboardingStep(
+              named.onboardingProgress,
+              "name",
+            );
+            setSave({
+              ...named,
+              onboardingProgress: completeOnboardingStep(
+                namedProgress,
+                "hatch",
+              ),
+            });
             onStart();
           }}
         >

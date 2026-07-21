@@ -38,7 +38,23 @@ export async function downloadOfflineAssets() {
     throw new Error("此瀏覽器不支援 Service Worker。");
   const reg = await navigator.serviceWorker.ready;
   reg.active?.postMessage({ type: "CACHE_OFFLINE" });
-  await fetch(`${import.meta.env.BASE_URL}index.html`, { cache: "reload" });
+  const cache = await caches.open("picopals-v3.0.0"),
+    base = new URL(import.meta.env.BASE_URL, location.origin).href,
+    resources = performance
+      .getEntriesByType("resource")
+      .map((entry) => entry.name)
+      .filter((url) => new URL(url, location.href).origin === location.origin),
+    urls = [...new Set([base, `${base}index.html`, ...resources])];
+  await Promise.all(
+    urls.map(async (url) => {
+      try {
+        const response = await fetch(url, { cache: "reload" });
+        if (response.ok) await cache.put(url, response);
+      } catch {
+        // A single optional resource must not cancel the complete app-shell cache.
+      }
+    }),
+  );
   return inspectOffline();
 }
 export async function updateOfflineAssets() {

@@ -355,7 +355,7 @@ async function createConflict(
 export async function resolveConflict(
   id: number,
   choice: "local" | "cloud" | "keep",
-  backend: CloudBackend,
+  backend?: CloudBackend | null,
 ) {
   const conflict = await db.syncConflicts.get(id),
     state = await ensureSyncState();
@@ -365,6 +365,7 @@ export async function resolveConflict(
     await db.syncState.update("main", { status: "conflict" });
     return conflict.localSave;
   }
+  if (!backend) throw new Error("請先重新登入再處理覆蓋操作。");
   await createLocalSnapshot(
     conflict.localSave,
     `衝突處理：使用${choice === "local" ? "本機" : "雲端"}版本`,

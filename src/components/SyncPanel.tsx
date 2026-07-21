@@ -99,7 +99,8 @@ export function SyncPanel({
     conflict: SyncConflict,
     choice: "local" | "cloud" | "keep",
   ) => {
-    if (!backend) return onNotice("請先重新登入再處理衝突。");
+    if (!backend && choice !== "keep")
+      return onNotice("請先重新登入再處理衝突。");
     if (
       choice !== "keep" &&
       !confirm(
@@ -432,7 +433,9 @@ export function SyncPanel({
         <div className="button-row">
           <a
             className="button-link"
-            href={`${import.meta.env.BASE_URL}CHANGELOG.md`}
+            href="https://github.com/sion-rgb/picopals-8bit/blob/main/CHANGELOG.md"
+            target="_blank"
+            rel="noreferrer"
           >
             更新內容
           </a>

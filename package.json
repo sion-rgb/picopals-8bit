@@ -8,8 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run --config vitest.config.ts",
-    "test:rules:unit": "vitest run src/tests/firestore.rules.test.ts --environment node",
-    "test:rules": "firebase emulators:exec --only firestore --project picopals-local-test \"npm.cmd run test:rules:unit\"",
+    "test:rules:unit": "vitest run --config vitest.rules.config.ts",
+    "test:rules": "firebase emulators:exec --only firestore --project picopals-local-test \"npm run test:rules:unit\"",
     "test:watch": "vitest --config vitest.config.ts",
     "test:e2e": "playwright test",
     "firebase": "firebase"

@@ -1,41 +1,27 @@
-# PicoPals 8-Bit
+# PicoPals 8-Bit v3
 
-A cute original 8-bit virtual pet Progressive Web App.
+原創、離線優先、支援手機與電腦的 8-bit 電子寵物 PWA。
 
-## Play Now
+## 立即遊玩
 
-[Play PicoPals 8-Bit](https://sion-rgb.github.io/picopals-8bit/)
+[開啟 PicoPals 8-Bit](https://sion-rgb.github.io/picopals-8bit/)
 
 ![PicoPals 8-Bit game screen](public/screenshot.png)
 
-## 遊戲簡介
+## v3 重點
 
-PicoPals 8-Bit／像素萌寵日記是一款以繁體中文（香港用語）製作、支援手機與電腦的原創電子寵物遊戲。領養星塵蛋，透過餵食、清潔、遊玩與陪伴，引導萌寵走向 20 種不同的可愛進化形態。
+- IndexedDB 仍是主要資料來源；所有照顧操作先在本機完成，不等待雲端。
+- Schema v1/v2 無損升級至 v3，升級前自動建立快照；JSON 備份不包含 UID、Token 或 Firebase 設定。
+- 自選 Firebase Authentication + Cloud Firestore 同步；未設定、未登入、斷線或額度錯誤時仍可完整遊玩。
+- Revision、SHA-256 checksum、compare-and-set、最近 10 個快照、最近 50 項紀錄及雙版本衝突處理。
+- BroadcastChannel 與 30 秒 IndexedDB 鎖，避免同一裝置多分頁重複上傳。
+- 設定頁可檢查網絡、Service Worker、App Shell Cache、IndexedDB 與 Persistent Storage；清除程式快取不會刪除存檔。
+- 20 種原創主寵輪廓、六位朋友各四階段造型、共用 Canvas 繪圖資料及原創 SVG 像素圖示表。
+- 每日三項香港時間任務、連續完成獎勵、可跳過／重看的十步新手引導、每日本機生成朋友圈。
+- 固定 4×2 操作矩陣，支援方向鍵、Enter、Escape、觸控及高對比模式。
+- 無廣告、無課金、無抽卡、無 AI API、無第三方角色素材。
 
-所有角色輪廓、像素畫面與 8-bit 音效均由專案程式原創生成，沒有使用既有電子寵物品牌素材。
-
-## 主要功能
-
-- IndexedDB Schema v2 自動存檔、v1 無損升級與升級前快照、離線成長摘要及時鐘倒退保護
-- 以階段開始時間推進的蛋／嬰兒／兒童／少年／成年成長，支援跨多階段離線補算
-- 14–28 日自然壽命、年輕／成熟／熟齡生命階段、12 小時緊急照顧、離別紀念與世代轉生
-- 飽足、心情、健康、清潔、精力、萌寵親密度、七日親密紀錄、體重、疾病、睡眠與穢物系統
-- 20 種原創成長形態及資料驅動進化分支；所有主畫面、圖鑑與紀念冊共用同一像素繪圖器
-- 三款真正可操作的小遊戲：接住愛心、星星記憶牌、跳跳緞帶
-- 可真正使用的餐點、零食、戒指、同玩代幣、盆栽、藥盒、牆紙與夜燈商店
-- 六位 NPC 各有四階段成長造型、每日對話、送禮、朋友同玩、關係階段、求婚與結婚
-- JSON 匯出／匯入、匯入前快照、上一個快照恢復及二次確認重設
-- 五款機身主題、音量、易讀字體、高對比、固定 4×2 操作矩陣、方向鍵／Enter／Escape 及觸控操作
-- 可安裝 PWA、離線 App Shell、Service Worker 更新提示及自選通知
-- 無廣告、無課金、無抽卡、無帳戶、無外部資料庫
-
-## 安裝 PWA
-
-1. 使用 Chrome、Edge 或支援安裝 PWA 的手機瀏覽器開啟可玩網址。
-2. 在遊戲「設定」選擇「安裝 PicoPals」，或使用瀏覽器選單的「安裝應用程式／加入主畫面」。
-3. 安裝後可由桌面或手機主畫面啟動。首次完整載入後，主要遊戲可離線開啟。
-
-## 本機啟動
+## 本機開發
 
 需要 Node.js 22 或更新版本。
 
@@ -44,38 +30,40 @@ npm install
 npm run dev
 ```
 
-開啟終端顯示的本機網址。其他可用指令：
+驗證指令：
 
 ```bash
-npm run test
+npm test
+npm run test:rules
 npm run test:e2e
 npm run build
-npm run preview
 ```
 
-端對端測試首次執行前，請安裝 Playwright Chromium：
+`npm run test:rules` 會啟動本機 Firestore Emulator；需要 Java。Playwright 首次執行前請使用 `npx playwright install chromium`。
 
-```bash
-npx playwright install chromium
-```
+## Firebase（可選）
 
-## GitHub Pages 部署
+遊戲預設只儲存在目前裝置。要啟用正式跨裝置同步：
 
-每次推送到 `main`，`.github/workflows/deploy-pages.yml` 會使用 Node.js 22 安裝依賴、執行單元測試、建立 Vite production build，然後部署 `dist/` 到 GitHub Pages。Vite 在 GitHub Actions 中自動使用 `/picopals-8bit/` base path；Manifest 與 Service Worker 皆使用 PWA scope 相對路徑。
+1. 登入 Firebase CLI 並建立或選擇專案。
+2. 啟用 Cloud Firestore、Google Authentication，以及需要時的 Email/Password Authentication。
+3. 將 `sion-rgb.github.io`、`localhost`、`127.0.0.1` 加到 Authentication 授權網域。
+4. 以 `.env.example` 的六個名稱建立本機 `.env`，並在 GitHub Repository Variables 建立同名變數。
+5. 執行 `firebase deploy --only firestore:rules,firestore:indexes`。
 
-## 測試
+未提供上述變數時，Production Build 仍會成功，設定頁會明確顯示「雲端服務尚未設定」。Service Account、Admin SDK 金鑰、Firebase CLI Token 與 GitHub Token 不應加入此 Repository。
 
-Vitest 覆蓋 27 項生命週期、親密度、NPC、道具、轉生及 Schema v2 遷移規則。Playwright 以桌面及手機兩個專案執行 11 條流程，覆蓋操作欄、餵食與三種清潔動畫、NPC 成長、道具使用、藥盒狀態、共用角色繪圖、朋友同玩、離別轉生、真實 IndexedDB v1→v2 升級及手機溢出。
+## 部署與測試
+
+推送 `main` 後，GitHub Actions 會執行 51 項單元測試、8 項 Firestore Rules Emulator 測試及 Production Build，再部署 `dist/` 至既有 GitHub Pages 網址。Playwright 提供 18 條流程，並在 desktop/mobile 兩個專案執行。
 
 ## 隱私
 
-- 遊戲不需要帳戶，也不連接 AI API。
-- 遊戲資料主要儲存在玩家裝置的瀏覽器 IndexedDB。
-- 開發者不會自動取得玩家存檔或遊戲內容。
-- 清除瀏覽器網站資料、無痕模式結束或瀏覽器儲存政策可能刪除存檔。
-- 建議玩家定期在「設定」使用 JSON 匯出功能備份。
-- 選擇開啟瀏覽器通知前，遊戲不會要求通知權限。
+- 不登入時，遊戲資料只存在瀏覽器 IndexedDB。
+- 玩家必須主動登入、開啟同步並確認首次上傳，現有存檔才會離開裝置。
+- 雲端只保存遊戲存檔、revision、快照、裝置短識別與同步紀錄；不收集 IP、精確位置或完整 User Agent。
+- 登出、關閉同步或刪除雲端副本都不會刪除本機存檔。
 
-## 授權與第三方資源
+## 授權
 
-原創專案程式以 [MIT License](LICENSE) 發佈。第三方套件及資源說明見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 與 `public/licenses/`。
+程式以 [MIT License](LICENSE) 發佈。第三方套件說明見 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，版本紀錄見 [CHANGELOG.md](CHANGELOG.md)。

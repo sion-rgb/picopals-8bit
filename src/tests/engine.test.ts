@@ -8,7 +8,7 @@ import {bySpecies} from "../data";
 import type {Pet,SaveFile} from "../types";
 
 const food=(id:string)=>foods.find(f=>f.id===id)!;
-const makeSave=(pet=createPet(0)):SaveFile=>({schemaVersion:2,exportedAt:0,pet,game:createGame(0),inventory:[],relationships:[{npcId:"aro",affection:0,gifts:[]}],album:[pet.speciesId],albumEntries:[{speciesId:pet.speciesId,unlockedAt:0,raisedCount:1}],achievements:["starter"],settings:{theme:"mint"},npcProgress:{aro:{stage:"baby",unlockedLooks:["baby"],coPlayRewardsToday:0}},unlockedDecor:[],equippedDecor:[],plantState:{owned:false,placed:false,growth:0},legacyTraits:{unlocked:[]},evolutionHistory:[],itemDefinitionsVersion:2});
+const makeSave=(pet=createPet(0)):SaveFile=>({schemaVersion:3,exportedAt:0,pet,game:createGame(0),inventory:[],relationships:[{npcId:"aro",affection:0,gifts:[]}],album:[pet.speciesId],albumEntries:[{speciesId:pet.speciesId,unlockedAt:0,raisedCount:1}],achievements:["starter"],settings:{theme:"mint",cloudSyncEnabled:false,syncNotifications:true,showConnectionIndicator:true},npcProgress:{aro:{stage:"baby",unlockedLooks:["baby"],coPlayRewardsToday:0}},unlockedDecor:[],equippedDecor:[],plantState:{owned:false,placed:false,growth:0},legacyTraits:{unlocked:[]},evolutionHistory:[],itemDefinitionsVersion:3,dailyMissions:{date:"1970-01-01",missions:[],claimed:false,streak:0,badges:0,highestSeenDate:"1970-01-01"},socialFeed:{date:"1970-01-01",posts:[],lastGeneratedAt:0},onboardingProgress:{active:true,completed:false,skipped:false,step:0,completedSteps:[],rewardClaimed:false},appVersion:"3.0.0"});
 
 describe("階段計時與生命週期",()=>{
  it("1. 蛋 1 分鐘後孵化",()=>expect(advanceTime(createPet(0),60000).pet.stage).toBe("baby"));
@@ -43,10 +43,10 @@ describe("正式商品與共用繪製",()=>{
  it("24. 圖鑑與主畫面共用同一角色繪製函式",()=>{const callsA:string[]=[],callsB:string[]=[];const ctx=(calls:string[])=>({save(){},restore(){},translate(){},scale(){},fillRect(x:number,y:number,w:number,h:number){calls.push(`${x},${y},${w},${h}`)},set fillStyle(_:string){},set globalAlpha(_:number){}}) as unknown as CanvasRenderingContext2D;drawSpeciesSprite(ctx(callsA),bySpecies("berrybun"),{x:0,y:0});drawSpeciesSprite(ctx(callsB),bySpecies("berrybun"),{x:0,y:0});expect(callsA).toEqual(callsB);expect(callsA.length).toBeGreaterThan(8)});
 });
 
-describe("Schema v2 migration 與 IndexedDB",()=>{
+describe("Schema v3 migration 與 IndexedDB",()=>{
  const legacy=()=>({schemaVersion:1,exportedAt:1,pet:{...createPet(1),stageStartedAt:undefined,nextEvolutionAt:undefined,dailyPetInteraction:undefined,affectionHistory:undefined,lifeExpectancyMinutes:undefined,lifeStage:undefined,lifetimeCareScore:undefined},game:{...createGame(1),coins:321},inventory:[{id:"gift:plant",itemId:"plant",quantity:2}],relationships:[{npcId:"aro",affection:44,gifts:[]}],album:["stardust-egg","pomu"],achievements:["old"],settings:{theme:"lcd"}});
- it("25. Schema 1 無損升級到 Schema 2",()=>{const n=migrateSaveV1(legacy(),1000);expect(n.schemaVersion).toBe(2);expect(n.game.coins).toBe(321);expect(n.inventory[0]!.quantity).toBe(2);expect(n.relationships[0]!.affection).toBe(44);expect(n.album).toContain("pomu");expect(n.settings.theme).toBe("lcd");expect(n.pet.stageStartedAt).toBeDefined()});
+ it("25. Schema 1 無損升級到 Schema 3",()=>{const n=migrateSaveV1(legacy(),1000);expect(n.schemaVersion).toBe(3);expect(n.game.coins).toBe(321);expect(n.inventory[0]!.quantity).toBe(2);expect(n.relationships[0]!.affection).toBe(44);expect(n.album).toContain("pomu");expect(n.settings.theme).toBe("lcd");expect(n.pet.stageStartedAt).toBeDefined()});
  beforeEach(async()=>{await db.delete();await db.open()});
- it("26. Schema v2 存檔後讀取一致",async()=>{const s=makeSave();await persistSave(s);const r=await loadSave();expect(r?.schemaVersion).toBe(2);expect(r?.pet.stageStartedAt).toBe(s.pet.stageStartedAt)});
- it("27. 匯入 Schema 1 會自動升級並建立 v2",async()=>{const r=await importSave(legacy());expect(r.schemaVersion).toBe(2);expect((await loadSave())?.game.coins).toBe(321)});
+ it("26. Schema v3 存檔後讀取一致",async()=>{const s=makeSave();await persistSave(s);const r=await loadSave();expect(r?.schemaVersion).toBe(3);expect(r?.pet.stageStartedAt).toBe(s.pet.stageStartedAt)});
+ it("27. 匯入 Schema 1 會自動升級並建立 v3",async()=>{const r=await importSave(legacy());expect(r.schemaVersion).toBe(3);expect((await loadSave())?.game.coins).toBe(321)});
 });

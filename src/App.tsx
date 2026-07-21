@@ -1,69 +1,2267 @@
-import {useCallback,useEffect,useMemo,useRef,useState} from "react";
-import {byShopItem,bySpecies,foods,gifts,npcs,shopItems,species} from "./data";
-import {advanceSaveTime,applyGameResult,canMarry,cleanPet,completeCoPlay,createGame,createPet,equipDecor,feedPet,gameReward,hkDate,itemUseReason,marry,petPet,placePlant,purchaseItem,rebirth,restPet,stageToNpc,startCoPlay,talkToNpc,useMedicine,waterPlant,giveGift} from "./engine";
-import {db,importSave,loadSave,persistSave,resetDatabase,restoreSnapshot} from "./db";
-import {playSound} from "./audio";
-import type {Gift,InventoryItem,NpcStage,OfflineSummary,SaveFile,ShopItem,Stage} from "./types";
-import {PetCanvas} from "./components/PetCanvas";
-import {MiniGames,type GameId} from "./components/MiniGames";
-import {NpcPreviewCanvas,SpeciesPreviewCanvas} from "./components/SpeciesPreviewCanvas";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { User } from "firebase/auth";
+import {
+  byShopItem,
+  bySpecies,
+  foods,
+  gifts,
+  npcs,
+  shopItems,
+  species,
+} from "./data";
+import {
+  advanceSaveTime,
+  applyGameResult,
+  canMarry,
+  cleanPet,
+  completeCoPlay,
+  createGame,
+  createPet,
+  equipDecor,
+  feedPet,
+  gameReward,
+  hkDate,
+  itemUseReason,
+  marry,
+  petPet,
+  placePlant,
+  purchaseItem,
+  rebirth,
+  restPet,
+  stageToNpc,
+  startCoPlay,
+  talkToNpc,
+  useMedicine,
+  waterPlant,
+  giveGift,
+} from "./engine";
+import {
+  db,
+  ensureSyncState,
+  importSave,
+  loadSave,
+  persistSave,
+  resetDatabase,
+  restoreSnapshot,
+  sanitizeSaveForExport,
+} from "./db";
+import { backendForUser, observeUser } from "./firebase";
+import {
+  acquireSyncLock,
+  releaseSyncLock,
+  SyncScheduler,
+  synchronizeGameSave,
+  type SyncResult,
+} from "./sync";
+import {
+  claimDailyReward,
+  completeOnboardingStep,
+  generateDailyMissions,
+  generateSocialFeed,
+  recordMission,
+  replyToPost,
+  rewardOnboarding,
+} from "./progression";
+import { playSound } from "./audio";
+import type {
+  Gift,
+  InventoryItem,
+  NpcStage,
+  OfflineSummary,
+  SaveFile,
+  ShopItem,
+  Stage,
+  SyncState,
+} from "./types";
+import { PetCanvas } from "./components/PetCanvas";
+import { MiniGames, type GameId } from "./components/MiniGames";
+import {
+  NpcPreviewCanvas,
+  SpeciesPreviewCanvas,
+} from "./components/SpeciesPreviewCanvas";
+import { PixelIcon, type PixelIconName } from "./components/PixelIcon";
+import {
+  DailyMissions,
+  GrowthHint,
+  OnboardingGuide,
+  SocialFeed,
+} from "./components/LongTermPlay";
+import { SyncPanel } from "./components/SyncPanel";
 
-type View="home"|"feed"|"games"|"clean"|"status"|"bag"|"social"|"shop"|"settings";
-const nav:{id:View;icon:string;label:string}[]=[{id:"feed",icon:"♨",label:"餵飼"},{id:"games",icon:"✦",label:"遊玩"},{id:"clean",icon:"✧",label:"清潔"},{id:"status",icon:"▥",label:"查詢"},{id:"bag",icon:"▣",label:"背包"},{id:"social",icon:"♥",label:"社交"},{id:"shop",icon:"◆",label:"商店"},{id:"settings",icon:"⚙",label:"設定"}];
-const themes:Record<string,string>={strawberry:"草莓粉紅",lavender:"薰衣草紫",mint:"薄荷綠",cream:"奶油白",lcd:"復古灰綠"};
-const relationshipSeed=()=>npcs.map(n=>({npcId:n.id,affection:0,gifts:[]}));
-const newSave=(test=false):SaveFile=>{const now=Date.now();let pet=createPet(now);const inventory:InventoryItem[]=[...foods.map(x=>({id:`food:${x.id}`,itemId:x.id,quantity:2})),...gifts.slice(0,3).map(x=>({id:`gift:${x.id}`,itemId:x.id,quantity:1}))];const relationships=relationshipSeed().map(r=>({...r,affection:test?95:8}));if(test){pet={...pet,stage:"adult",speciesId:"rosette",health:92,happiness:94,ageMinutes:3100,stageStartedAt:now-40*3600000,nextEvolutionAt:undefined,idealWeightMin:12,idealWeightMax:16};inventory.push({id:"proposal:ring",itemId:"ring",quantity:1},{id:"medicine:medicine",itemId:"medicine",quantity:1},{id:"social:token",itemId:"token",quantity:2},{id:"gift:plant",itemId:"plant",quantity:1})}return{schemaVersion:2,exportedAt:now,pet,game:createGame(now),inventory,relationships,album:[pet.speciesId],albumEntries:[{speciesId:pet.speciesId,unlockedAt:now,raisedCount:1}],achievements:[],settings:{theme:"strawberry",volume:.18,readable:false,highContrast:false,schedule:"early"},npcProgress:Object.fromEntries(npcs.map(n=>[n.id,{stage:stageToNpc(pet.stage),unlockedLooks:[stageToNpc(pet.stage)],coPlayRewardsToday:0}])),unlockedDecor:[],equippedDecor:[],plantState:{owned:false,placed:false,growth:0},legacyTraits:{unlocked:[]},evolutionHistory:[],itemDefinitionsVersion:2}};
-const wait=(ms:number)=>new Promise(r=>setTimeout(r,ms));
+type View =
+  | "home"
+  | "feed"
+  | "games"
+  | "clean"
+  | "status"
+  | "bag"
+  | "social"
+  | "shop"
+  | "settings";
+const nav: { id: View; icon: PixelIconName; label: string }[] = [
+  { id: "feed", icon: "feed", label: "餵飼" },
+  { id: "games", icon: "games", label: "遊玩" },
+  { id: "clean", icon: "clean", label: "清潔" },
+  { id: "status", icon: "status", label: "查詢" },
+  { id: "bag", icon: "bag", label: "背包" },
+  { id: "social", icon: "social", label: "社交" },
+  { id: "shop", icon: "shop", label: "商店" },
+  { id: "settings", icon: "settings", label: "設定" },
+];
+const themes: Record<string, string> = {
+  strawberry: "草莓粉紅",
+  lavender: "薰衣草紫",
+  mint: "薄荷綠",
+  cream: "奶油白",
+  lcd: "復古灰綠",
+};
+const relationshipSeed = () =>
+  npcs.map((n) => ({ npcId: n.id, affection: 0, gifts: [] }));
+const newSave = (test = false): SaveFile => {
+  const now = Date.now();
+  let pet = createPet(now);
+  const inventory: InventoryItem[] = [
+    ...foods.map((x) => ({ id: `food:${x.id}`, itemId: x.id, quantity: 2 })),
+    ...gifts
+      .slice(0, 3)
+      .map((x) => ({ id: `gift:${x.id}`, itemId: x.id, quantity: 1 })),
+  ];
+  const relationships = relationshipSeed().map((r) => ({
+    ...r,
+    affection: test ? 95 : 8,
+  }));
+  if (test) {
+    pet = {
+      ...pet,
+      stage: "adult",
+      speciesId: "rosette",
+      health: 92,
+      happiness: 94,
+      ageMinutes: 3100,
+      stageStartedAt: now - 40 * 3600000,
+      nextEvolutionAt: undefined,
+      idealWeightMin: 12,
+      idealWeightMax: 16,
+    };
+    inventory.push(
+      { id: "proposal:ring", itemId: "ring", quantity: 1 },
+      { id: "medicine:medicine", itemId: "medicine", quantity: 1 },
+      { id: "social:token", itemId: "token", quantity: 2 },
+      { id: "gift:plant", itemId: "plant", quantity: 1 },
+    );
+  }
+  const seed: SaveFile = {
+    schemaVersion: 3 as const,
+    exportedAt: now,
+    pet,
+    game: createGame(now),
+    inventory,
+    relationships,
+    album: [pet.speciesId],
+    albumEntries: [
+      { speciesId: pet.speciesId, unlockedAt: now, raisedCount: 1 },
+    ],
+    achievements: [],
+    settings: {
+      theme: "strawberry",
+      volume: 0.18,
+      readable: false,
+      highContrast: false,
+      schedule: "early",
+      cloudSyncEnabled: false,
+      syncNotifications: true,
+      showConnectionIndicator: true,
+    },
+    npcProgress: Object.fromEntries(
+      npcs.map((n) => [
+        n.id,
+        {
+          stage: stageToNpc(pet.stage),
+          unlockedLooks: [stageToNpc(pet.stage)],
+          coPlayRewardsToday: 0,
+        },
+      ]),
+    ),
+    unlockedDecor: [],
+    equippedDecor: [],
+    plantState: { owned: false, placed: false, growth: 0 },
+    legacyTraits: { unlocked: [] },
+    evolutionHistory: [],
+    itemDefinitionsVersion: 3,
+    dailyMissions: {
+      date: "",
+      missions: [],
+      claimed: false,
+      streak: 0,
+      badges: 0,
+      highestSeenDate: "",
+    },
+    socialFeed: { date: "", posts: [], lastGeneratedAt: 0 },
+    onboardingProgress: {
+      active: true,
+      completed: false,
+      skipped: false,
+      step: 0,
+      completedSteps: [],
+      rewardClaimed: false,
+    },
+    appVersion: "3.0.0",
+  };
+  return {
+    ...seed,
+    dailyMissions: generateDailyMissions(now, seed.dailyMissions),
+    socialFeed: generateSocialFeed(seed, now),
+  };
+};
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function App(){const[save,setSave]=useState<SaveFile|null>(null),[started,setStarted]=useState(false),[loading,setLoading]=useState(true),[view,setView]=useState<View>("home"),[action,setAction]=useState("idle"),[busy,setBusy]=useState(false),[notice,setNotice]=useState(""),[offline,setOffline]=useState<OfflineSummary|null>(null),[installEvent,setInstallEvent]=useState<BeforeInstallPromptEvent|null>(null),[updateReady,setUpdateReady]=useState<ServiceWorkerRegistration|null>(null),[selectedNav,setSelectedNav]=useState(0),[friendMode,setFriendMode]=useState<string|null>(null);const ready=useRef(false),petArea=useRef<HTMLElement>(null),navRef=useRef<HTMLElement>(null);const volume=Number(save?.settings.volume??.18),sound=useCallback((s:Parameters<typeof playSound>[0])=>playSound(s,volume),[volume]);
- const patch=useCallback((fn:(s:SaveFile)=>SaveFile,fx?:Parameters<typeof playSound>[0],message?:string)=>{setSave(s=>s?fn(s):s);if(fx)sound(fx);if(message)setNotice(message)},[sound]);
- const advanceNow=useCallback((show=false)=>setSave(s=>{if(!s)return s;const r=advanceSaveTime(s,Date.now());if(show&&(r.summary.minutes>=2||r.summary.evolutions.length||r.summary.clockAnomaly))setOffline(r.summary);return r.save}),[]);
- useEffect(()=>{void(async()=>{const existing=await loadSave();let next=existing??newSave(new URLSearchParams(location.search).get("testMode")==="1");if(existing){const advanced=advanceSaveTime(existing);next=advanced.save;if(advanced.summary.minutes>=2||advanced.summary.evolutions.length||advanced.summary.clockAnomaly)setOffline(advanced.summary);setStarted(true)}setSave(next);setLoading(false);ready.current=true;await persistSave(next);if(navigator.storage?.persist){const ok=await navigator.storage.persist();if(!ok&&!localStorage.getItem("persist-tip")){localStorage.setItem("persist-tip","1");setNotice("建議定期匯出存檔，以免瀏覽器清除網站資料。")}}})().catch(()=>{setSave(newSave());setLoading(false);setNotice("未能讀取舊存檔，已準備新的星塵蛋。")})},[]);
- useEffect(()=>{if(!save||!ready.current)return;const t=setTimeout(()=>void persistSave({...save,exportedAt:Date.now()}),180);return()=>clearTimeout(t)},[save]);
- useEffect(()=>{const tick=setInterval(()=>advanceNow(false),60000),pageShow=()=>advanceNow(true);const visibility=()=>{if(document.visibilityState==="visible")advanceNow(true);else if(save)void persistSave(save)};const before=()=>{if(save)void persistSave(save)};document.addEventListener("visibilitychange",visibility);addEventListener("pageshow",pageShow);addEventListener("beforeunload",before);return()=>{clearInterval(tick);document.removeEventListener("visibilitychange",visibility);removeEventListener("pageshow",pageShow);removeEventListener("beforeunload",before)}},[advanceNow,save]);
- useEffect(()=>{const before=(e:Event)=>{e.preventDefault();setInstallEvent(e as BeforeInstallPromptEvent)};addEventListener("beforeinstallprompt",before);if("serviceWorker" in navigator)void navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`,{scope:import.meta.env.BASE_URL}).then(reg=>reg.addEventListener("updatefound",()=>{const w=reg.installing;if(w)w.addEventListener("statechange",()=>{if(w.state==="installed"&&navigator.serviceWorker.controller)setUpdateReady(reg)})}));return()=>removeEventListener("beforeinstallprompt",before)},[]);
- useEffect(()=>{if(!notice)return;const t=setTimeout(()=>setNotice(""),4800);return()=>clearTimeout(t)},[notice]);
- useEffect(()=>{const key=(e:KeyboardEvent)=>{const target=e.target as HTMLElement,inGrid=Boolean(target.closest?.(".pet-action-grid")),pageTarget=target===document.body||target===document.documentElement;if(e.key==="Escape"){setView("home");return}if(!inGrid&&!pageTarget)return;if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(e.key)){e.preventDefault();setSelectedNav(i=>{const row=Math.floor(i/4),column=i%4,n=e.key==="ArrowLeft"?row*4+(column+3)%4:e.key==="ArrowRight"?row*4+(column+1)%4:e.key==="ArrowUp"?(row?i-4:i+4):(row?i-4:i+4);requestAnimationFrame(()=>navRef.current?.querySelectorAll<HTMLButtonElement>("button")[n]?.focus());return n})}if(e.key==="Enter"){e.preventDefault();navRef.current?.querySelectorAll<HTMLButtonElement>("button")[selectedNav]?.click()}};addEventListener("keydown",key);return()=>removeEventListener("keydown",key)},[selectedNav]);
- if(loading||!save)return <div className="loading"><div className="pixel-loader">✦</div><p>正在喚醒星塵蛋…</p></div>;
- const pet=save.pet,spec=bySpecies(pet.speciesId),theme=String(save.settings.theme??"strawberry"),npcStage=stageToNpc(pet.stage);
- const navigate=(v:View)=>{if(busy)return;setView(v);setSelectedNav(Math.max(0,nav.findIndex(n=>n.id===v)));sound("move")};
- const focusPet=()=>{setView("home");requestAnimationFrame(()=>petArea.current?.scrollIntoView({behavior:"smooth",block:"start"}))};
- const animateFeed=async(id:string)=>{const food=foods.find(x=>x.id===id),item=save.inventory.find(x=>x.itemId===id&&x.quantity>0);if(!food||!item)return setNotice("背包沒有這款食物，先到商店補貨吧。");if(pet.fullness>=95)return setNotice(`${pet.name}已經很飽，遲一點再吃吧！`);focusPet();setBusy(true);const short=matchMedia("(prefers-reduced-motion: reduce)").matches,delay=short?110:350;for(const phase of ["food-enter","pet-approach","bite","chew","chew","reaction"]){setAction(`feed-${phase}`);sound(phase==="bite"||phase==="chew"?"eat":"move");await wait(delay)}setSave(s=>{if(!s)return s;const advanced=advanceSaveTime(s).save;return{...advanced,pet:feedPet(advanced.pet,food),inventory:advanced.inventory.map(i=>i.id===item.id?{...i,quantity:i.quantity-1}:i)}});setAction("idle");setBusy(false);setNotice(`${food.name}：飽足 +${food.fullness}，萌寵親密度也有提升。`)};
- const animateClean=async(kind:"poop"|"sweep"|"bath")=>{focusPet();setBusy(true);setAction(`clean-${kind}`);sound("clean");await wait(matchMedia("(prefers-reduced-motion: reduce)").matches?550:kind==="bath"?2300:1900);setSave(s=>{if(!s)return s;const advanced=advanceSaveTime(s).save;return{...advanced,pet:cleanPet(advanced.pet,kind)}});setAction("happy");await wait(300);setAction("idle");setBusy(false);setNotice(kind==="bath"?"泡泡澡完成，乾淨星光閃閃發亮！":"清潔完成，房間再次閃閃發亮！")};
- const finishGame=(id:GameId,score:number)=>{const old=save.game.highScores[id]??0,isRecord=score>old,base=gameReward(score),reward=friendMode?Math.ceil(base*1.1):base;setSave(s=>{if(!s)return s;let next=advanceSaveTime(s).save;next={...next,pet:applyGameResult(next.pet,score,isRecord),game:{...next.game,coins:next.game.coins+reward,highScores:{...next.game.highScores,[id]:Math.max(old,score)}}};if(friendMode)next=completeCoPlay(next,friendMode);return next});sound("success");setNotice(`得到 ${reward} 枚星星幣${friendMode?"，朋友好感度 +6":""}！`);setFriendMode(null);focusPet();setAction("happy")};
- const talk=(id:string)=>setSave(s=>{if(!s)return s;let message="";const relationships=s.relationships.map(r=>{if(r.npcId!==id)return r;const result=talkToNpc(r);message=result.message;return result.relationship});setNotice(message);return{...s,relationships}});
- const giftNpc=(npcId:string,giftId:string)=>{const npc=npcs.find(n=>n.id===npcId),gift=gifts.find(g=>g.id===giftId),item=save.inventory.find(i=>i.itemId===giftId&&i.quantity>0);if(!npc||!gift||!item)return setNotice("背包裡沒有這份禮物。");patch(s=>({...s,relationships:s.relationships.map(r=>r.npcId===npcId?giveGift(r,gift,npc):r),inventory:s.inventory.map(i=>i.id===item.id?{...i,quantity:i.quantity-1}:i)}),"gift",`${npc.name}收下禮物，朋友好感度提升！`);setAction("gift")};
- const propose=(id:string)=>{const r=save.relationships.find(x=>x.npcId===id)!,ring=save.inventory.find(x=>x.itemId==="ring"&&x.quantity>0);if(!canMarry(pet,r,!!ring))return setNotice("仍需成年、健康及心情高於 60、朋友好感 95 與寶石戒指。");patch(s=>({...s,pet:marry(s.pet,r,true),inventory:s.inventory.map(i=>i.id===ring!.id?{...i,quantity:i.quantity-1}:i),achievements:[...new Set([...s.achievements,"星光盟約"])]}),"wedding","恭喜！你們在花瓣與星光下結為伴侶。");setAction("wedding")};
- const beginCoPlay=(id:string)=>{const r=startCoPlay(save,id);setNotice(r.reason);if(r.ok){setSave(r.save);setFriendMode(id);navigate("games")}};
- const buyItem=(item:ShopItem)=>{const r=purchaseItem(save,item);setSave(r.save);setNotice(r.reason);if(r.ok)sound("coin")};
- const useMed=()=>{const r=useMedicine(save);setSave(r.save);setNotice(r.reason);if(r.ok){sound("success");setAction("happy")}};
- const navDisabledReason=(id:View)=>busy?"動畫進行中，請稍候。":id==="games"&&pet.energy<8?"精力不足，先休息再遊玩。":undefined;
- return <div className={`app theme-${theme} ${save.settings.readable?"readable":""} ${save.settings.highContrast?"contrast":""}`}><a className="skip" href="#main">跳到遊戲內容</a><header className="topbar"><button className="brand" onClick={()=>navigate("home")}><span className="logo-mark">P</span><span><b>PicoPals</b><small>像素萌寵日記 · v2</small></span></button><div className="top-stats"><span><i>◆</i><b>{save.game.coins}</b><small>星星幣</small></span><span><i>♥</i><b>{pet.affection}</b><small>萌寵親密度</small></span><button className="sound" onClick={()=>patch(s=>({...s,settings:{...s.settings,volume:Number(s.settings.volume)>0?0:.18}}),"move")} aria-label={volume?"靜音":"開啟音效"}>{volume?"♫":"×"}</button></div></header>
- <main id="main" className="layout"><aside className="pet-column" ref={petArea}><div className="device" data-busy={busy}><div className="device-top"><span>✦ PICO PAL ✦</span><b>{spec.en}</b></div><div className="screen-wrap"><div className="screen-status"><span>{pet.emergencySince?"需要緊急照顧":pet.isSick?"需要照顧":pet.lifeStage==="senior"?"熟齡萌寵":"狀態良好"}</span><span>{new Date().toLocaleTimeString("zh-HK",{hour:"2-digit",minute:"2-digit"})}</span></div><PetCanvas pet={pet} action={action} theme={theme} equippedDecor={save.equippedDecor} plantState={save.plantState}/><div className="screen-caption"><b>{pet.name}</b><span>{spec.name} · {stageLabel(pet.stage)}</span></div></div>{busy&&<div className="busy-label">動畫進行中…</div>}</div><nav ref={navRef} className="pet-action-grid" aria-label="主要操作">{nav.map((n,i)=>{const reason=navDisabledReason(n.id);return <button key={n.id} className={view===n.id?"selected":""} aria-current={view===n.id?"page":undefined} title={reason} onFocus={()=>setSelectedNav(i)} onClick={()=>navigate(n.id)} disabled={Boolean(reason)}><i>{n.icon}</i><span>{n.label}</span></button>})}</nav><div className="quick-bars"><Meter icon="♥" label="心情" value={pet.happiness}/><Meter icon="●" label="飽足" value={pet.fullness}/><Meter icon="✦" label="健康" value={pet.health}/><Meter icon="♡" label="萌寵親密" value={pet.affection}/></div>{pet.emergencySince&&<button className="care-alert" onClick={()=>navigate("status")}><b>！至少 12 小時挽救期</b><span>藥盒、健康餐、清潔、休息與陪伴都可幫助牠 →</span></button>}</aside>
- <section className="content-column">{view==="home"?<Home save={save} spec={spec} onNavigate={navigate} onRest={()=>{setSave(s=>{if(!s)return s;const advanced=advanceSaveTime(s).save;return{...advanced,pet:restPet(advanced.pet)}});sound("sleep");setNotice(pet.isSleeping?"已經開燈起床。":"晚安，好好休息吧！")}} onPet={()=>{const r=petPet(save.pet);setSave({...save,pet:r.pet});setNotice(r.reason);if(r.earned)sound("gift")}} onWater={()=>{const r=waterPlant(save);setSave(r.save);setNotice(r.reason)}}/>:view==="feed"?<FeedPanel save={save} busy={busy} onFeed={animateFeed} onBack={()=>navigate("home")}/>:view==="games"?<MiniGames companion={friendMode?{npcId:friendMode,stage:npcStage}:undefined} onFinish={finishGame} onBack={()=>{setFriendMode(null);navigate("home")}}/>:view==="clean"?<CleanPanel save={save} busy={busy} onClean={animateClean} onBack={()=>navigate("home")}/>:view==="status"?<StatusPanel save={save} onMedicine={useMed} onBack={()=>navigate("home")}/>:view==="bag"?<BagPanel save={save} setSave={setSave} onMedicine={useMed} onNotice={setNotice} onBack={()=>navigate("home")}/>:view==="social"?<SocialPanel save={save} stage={npcStage} onTalk={talk} onGift={giftNpc} onPropose={propose} onCoPlay={beginCoPlay} onBack={()=>navigate("home")}/>:view==="shop"?<ShopPanel save={save} onBuy={buyItem} onBack={()=>navigate("home")}/>:<SettingsPanel save={save} installEvent={installEvent} setSave={setSave} setStarted={setStarted} onNotice={setNotice} onBack={()=>navigate("home")}/>}</section></main>
- {!started&&<Onboarding save={save} setSave={setSave} onStart={()=>{setStarted(true);sound("evolve");setAction("evolve")}}/>}{!pet.isAlive&&<DepartureModal save={save} onRebirth={()=>{setSave(rebirth(save));setStarted(false);setAction("evolve");setNotice("上一代留下了一點星光，新的相遇開始了。")}}/>}{offline&&<OfflineModal summary={offline} name={pet.name} onClose={()=>setOffline(null)}/>} {notice&&<div className="toast" role="status"><span>{notice}</span><button onClick={()=>setNotice("")} aria-label="關閉">×</button></div>}{updateReady&&<div className="update"><span>像素萌寵有新版本，重新啟動即可更新。</span><button onClick={()=>{updateReady.waiting?.postMessage({type:"SKIP_WAITING"});location.reload()}}>立即更新</button><button onClick={()=>setUpdateReady(null)}>稍後</button></div>}</div>}
+export function App() {
+  const [save, setSave] = useState<SaveFile | null>(null),
+    [started, setStarted] = useState(false),
+    [loading, setLoading] = useState(true),
+    [view, setView] = useState<View>("home"),
+    [action, setAction] = useState("idle"),
+    [busy, setBusy] = useState(false),
+    [notice, setNotice] = useState(""),
+    [offline, setOffline] = useState<OfflineSummary | null>(null),
+    [installEvent, setInstallEvent] = useState<BeforeInstallPromptEvent | null>(
+      null,
+    ),
+    [updateReady, setUpdateReady] = useState<ServiceWorkerRegistration | null>(
+      null,
+    ),
+    [selectedNav, setSelectedNav] = useState(0),
+    [friendMode, setFriendMode] = useState<string | null>(null),
+    [syncState, setSyncState] = useState<SyncState | null>(null),
+    [cloudUser, setCloudUser] = useState<User | null>(null);
+  const ready = useRef(false),
+    petArea = useRef<HTMLElement>(null),
+    navRef = useRef<HTMLElement>(null),
+    schedulerRef = useRef<SyncScheduler | null>(null),
+    tabId = useRef(crypto.randomUUID?.() ?? String(Date.now()));
+  const volume = Number(save?.settings.volume ?? 0.18),
+    sound = useCallback(
+      (s: Parameters<typeof playSound>[0]) => playSound(s, volume),
+      [volume],
+    );
+  const patch = useCallback(
+    (
+      fn: (s: SaveFile) => SaveFile,
+      fx?: Parameters<typeof playSound>[0],
+      message?: string,
+    ) => {
+      setSave((s) => (s ? fn(s) : s));
+      if (fx) sound(fx);
+      if (message) setNotice(message);
+    },
+    [sound],
+  );
+  const advanceNow = useCallback(
+    (show = false) =>
+      setSave((s) => {
+        if (!s) return s;
+        const r = advanceSaveTime(s, Date.now());
+        if (
+          show &&
+          (r.summary.minutes >= 2 ||
+            r.summary.evolutions.length ||
+            r.summary.clockAnomaly)
+        )
+          setOffline(r.summary);
+        return r.save;
+      }),
+    [],
+  );
+  const refreshSync = useCallback(
+    () => void ensureSyncState().then(setSyncState),
+    [],
+  );
+  const syncNow = useCallback(async (): Promise<SyncResult> => {
+    const locked = await acquireSyncLock(tabId.current);
+    if (!locked)
+      return {
+        status: "skipped",
+        message: "另一個分頁正在同步，稍後會自動更新。",
+      };
+    try {
+      const result = await synchronizeGameSave({
+        backend: backendForUser(cloudUser),
+        confirmInitialUpload: () =>
+          confirm("雲端尚未有存檔。是否將這部裝置的萌寵存檔上傳至雲端？"),
+      });
+      if (result.save) setSave(result.save);
+      await ensureSyncState().then(setSyncState);
+      return result;
+    } finally {
+      await releaseSyncLock(tabId.current);
+    }
+  }, [cloudUser]);
+  const scheduleSync = useCallback(
+    () => schedulerRef.current?.schedule(5000),
+    [],
+  );
+  useEffect(() => {
+    schedulerRef.current = new SyncScheduler(syncNow);
+    return () => schedulerRef.current?.cancel();
+  }, [syncNow]);
+  useEffect(
+    () =>
+      observeUser((user) => {
+        setCloudUser(user);
+        void ensureSyncState().then(async (state) => {
+          if (!user && state.currentUserId)
+            await db.syncState.update("main", {
+              currentUserId: undefined,
+              cloudSyncEnabled: false,
+              status: "local-only",
+            });
+          setSyncState(await ensureSyncState());
+        });
+      }),
+    [],
+  );
+  useEffect(() => {
+    void (async () => {
+      const existing = await loadSave();
+      let next =
+        existing ??
+        newSave(new URLSearchParams(location.search).get("testMode") === "1");
+      if (existing) {
+        const advanced = advanceSaveTime(existing);
+        next = advanced.save;
+        if (
+          advanced.summary.minutes >= 2 ||
+          advanced.summary.evolutions.length ||
+          advanced.summary.clockAnomaly
+        )
+          setOffline(advanced.summary);
+        setStarted(true);
+      }
+      next = {
+        ...next,
+        dailyMissions: generateDailyMissions(Date.now(), next.dailyMissions),
+        socialFeed: generateSocialFeed(next),
+      };
+      setSave(next);
+      setLoading(false);
+      ready.current = true;
+      await persistSave(next, { trackChange: false, action: "app-open" });
+      setSyncState(await ensureSyncState());
+      if (navigator.storage?.persist) {
+        const ok = await navigator.storage.persist();
+        if (!ok && !localStorage.getItem("persist-tip")) {
+          localStorage.setItem("persist-tip", "1");
+          setNotice("建議定期匯出存檔，以免瀏覽器清除網站資料。");
+        }
+      }
+    })().catch(() => {
+      setSave(newSave());
+      setLoading(false);
+      setNotice("未能讀取舊存檔，已準備新的星塵蛋。");
+    });
+  }, []);
+  useEffect(() => {
+    if (!save || !ready.current) return;
+    const t = setTimeout(
+      () =>
+        void persistSave({ ...save, exportedAt: Date.now() }).then(refreshSync),
+      180,
+    );
+    return () => clearTimeout(t);
+  }, [save, refreshSync]);
+  useEffect(() => {
+    const online = () => {
+        void db.syncState
+          .update("main", {
+            status: syncState?.cloudSyncEnabled ? "dirty" : "local-only",
+          })
+          .then(() => {
+            refreshSync();
+            if (syncState?.cloudSyncEnabled)
+              void syncNow().then((r) => setNotice(r.message));
+          });
+      },
+      offlineNow = () => {
+        void db.syncState
+          .update("main", {
+            status: syncState?.cloudSyncEnabled ? "offline" : "local-only",
+          })
+          .then(refreshSync);
+        if (!sessionStorage.getItem("offline-notice")) {
+          sessionStorage.setItem("offline-notice", "1");
+          setNotice("目前離線，變更會先儲存在這部裝置，連線後再同步。");
+        }
+      };
+    addEventListener("online", online);
+    addEventListener("offline", offlineNow);
+    const periodic = setInterval(() => {
+      if (syncState?.cloudSyncEnabled && syncState.dirty) void syncNow();
+    }, 300000);
+    return () => {
+      removeEventListener("online", online);
+      removeEventListener("offline", offlineNow);
+      clearInterval(periodic);
+    };
+  }, [syncState?.cloudSyncEnabled, syncState?.dirty, syncNow, refreshSync]);
+  useEffect(() => {
+    const tick = setInterval(() => advanceNow(false), 60000),
+      pageShow = () => advanceNow(true);
+    const visibility = () => {
+      if (document.visibilityState === "visible") advanceNow(true);
+      else if (save)
+        void persistSave(save).then(() => {
+          if (syncState?.cloudSyncEnabled && syncState.dirty) void syncNow();
+        });
+    };
+    const before = () => {
+      if (save) void persistSave(save);
+    };
+    document.addEventListener("visibilitychange", visibility);
+    addEventListener("pageshow", pageShow);
+    addEventListener("beforeunload", before);
+    return () => {
+      clearInterval(tick);
+      document.removeEventListener("visibilitychange", visibility);
+      removeEventListener("pageshow", pageShow);
+      removeEventListener("beforeunload", before);
+    };
+  }, [
+    advanceNow,
+    save,
+    syncNow,
+    syncState?.cloudSyncEnabled,
+    syncState?.dirty,
+  ]);
+  useEffect(() => {
+    const before = (e: Event) => {
+      e.preventDefault();
+      setInstallEvent(e as BeforeInstallPromptEvent);
+    };
+    addEventListener("beforeinstallprompt", before);
+    if ("serviceWorker" in navigator)
+      void navigator.serviceWorker
+        .register(`${import.meta.env.BASE_URL}sw.js`, {
+          scope: import.meta.env.BASE_URL,
+        })
+        .then((reg) =>
+          reg.addEventListener("updatefound", () => {
+            const w = reg.installing;
+            if (w)
+              w.addEventListener("statechange", () => {
+                if (
+                  w.state === "installed" &&
+                  navigator.serviceWorker.controller
+                )
+                  setUpdateReady(reg);
+              });
+          }),
+        );
+    return () => removeEventListener("beforeinstallprompt", before);
+  }, []);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 4800);
+    return () => clearTimeout(t);
+  }, [notice]);
+  useEffect(() => {
+    const key = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement,
+        inGrid = Boolean(target.closest?.(".pet-action-grid")),
+        pageTarget =
+          target === document.body || target === document.documentElement;
+      if (e.key === "Escape") {
+        setView("home");
+        return;
+      }
+      if (!inGrid && !pageTarget) return;
+      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+        e.preventDefault();
+        setSelectedNav((i) => {
+          const row = Math.floor(i / 4),
+            column = i % 4,
+            n =
+              e.key === "ArrowLeft"
+                ? row * 4 + ((column + 3) % 4)
+                : e.key === "ArrowRight"
+                  ? row * 4 + ((column + 1) % 4)
+                  : e.key === "ArrowUp"
+                    ? row
+                      ? i - 4
+                      : i + 4
+                    : row
+                      ? i - 4
+                      : i + 4;
+          requestAnimationFrame(() =>
+            navRef.current
+              ?.querySelectorAll<HTMLButtonElement>("button")
+              [n]?.focus(),
+          );
+          return n;
+        });
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        navRef.current
+          ?.querySelectorAll<HTMLButtonElement>("button")
+          [selectedNav]?.click();
+      }
+    };
+    addEventListener("keydown", key);
+    return () => removeEventListener("keydown", key);
+  }, [selectedNav]);
+  if (loading || !save)
+    return (
+      <div className="loading">
+        <div className="pixel-loader">✦</div>
+        <p>正在喚醒星塵蛋…</p>
+      </div>
+    );
+  const pet = save.pet,
+    spec = bySpecies(pet.speciesId),
+    theme = String(save.settings.theme ?? "strawberry"),
+    npcStage = stageToNpc(pet.stage);
+  const navigate = (v: View) => {
+    if (busy) return;
+    setView(v);
+    setSelectedNav(
+      Math.max(
+        0,
+        nav.findIndex((n) => n.id === v),
+      ),
+    );
+    sound("move");
+  };
+  const focusPet = () => {
+    setView("home");
+    requestAnimationFrame(() =>
+      petArea.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+    );
+  };
+  const animateFeed = async (id: string) => {
+    const food = foods.find((x) => x.id === id),
+      item = save.inventory.find((x) => x.itemId === id && x.quantity > 0);
+    if (!food || !item) return setNotice("背包沒有這款食物，先到商店補貨吧。");
+    if (pet.fullness >= 95)
+      return setNotice(`${pet.name}已經很飽，遲一點再吃吧！`);
+    focusPet();
+    setBusy(true);
+    const short = matchMedia("(prefers-reduced-motion: reduce)").matches,
+      delay = short ? 110 : 350;
+    for (const phase of [
+      "food-enter",
+      "pet-approach",
+      "bite",
+      "chew",
+      "chew",
+      "reaction",
+    ]) {
+      setAction(`feed-${phase}`);
+      sound(phase === "bite" || phase === "chew" ? "eat" : "move");
+      await wait(delay);
+    }
+    setSave((s) => {
+      if (!s) return s;
+      const advanced = advanceSaveTime(s).save,
+        next = {
+          ...advanced,
+          pet: feedPet(advanced.pet, food),
+          inventory: advanced.inventory.map((i) =>
+            i.id === item.id ? { ...i, quantity: i.quantity - 1 } : i,
+          ),
+        };
+      return food.health > 1 ? recordMission(next, "healthy-meal") : next;
+    });
+    scheduleSync();
+    setAction("idle");
+    setBusy(false);
+    setNotice(`${food.name}：飽足 +${food.fullness}，萌寵親密度也有提升。`);
+  };
+  const animateClean = async (kind: "poop" | "sweep" | "bath") => {
+    focusPet();
+    setBusy(true);
+    setAction(`clean-${kind}`);
+    sound("clean");
+    await wait(
+      matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? 550
+        : kind === "bath"
+          ? 2300
+          : 1900,
+    );
+    setSave((s) => {
+      if (!s) return s;
+      const advanced = advanceSaveTime(s).save;
+      return recordMission(
+        { ...advanced, pet: cleanPet(advanced.pet, kind) },
+        "clean",
+      );
+    });
+    scheduleSync();
+    setAction("happy");
+    await wait(300);
+    setAction("idle");
+    setBusy(false);
+    setNotice(
+      kind === "bath"
+        ? "泡泡澡完成，乾淨星光閃閃發亮！"
+        : "清潔完成，房間再次閃閃發亮！",
+    );
+  };
+  const finishGame = (id: GameId, score: number) => {
+    const old = save.game.highScores[id] ?? 0,
+      isRecord = score > old,
+      base = gameReward(score),
+      reward = friendMode ? Math.ceil(base * 1.1) : base;
+    setSave((s) => {
+      if (!s) return s;
+      let next = advanceSaveTime(s).save;
+      next = {
+        ...next,
+        pet: applyGameResult(next.pet, score, isRecord),
+        game: {
+          ...next.game,
+          coins: next.game.coins + reward,
+          highScores: { ...next.game.highScores, [id]: Math.max(old, score) },
+        },
+      };
+      if (friendMode) next = completeCoPlay(next, friendMode);
+      return recordMission(next, "game");
+    });
+    scheduleSync();
+    sound("success");
+    setNotice(
+      `得到 ${reward} 枚星星幣${friendMode ? "，朋友好感度 +6" : ""}！`,
+    );
+    setFriendMode(null);
+    focusPet();
+    setAction("happy");
+  };
+  const talk = (id: string) => {
+    setSave((s) => {
+      if (!s) return s;
+      let message = "";
+      const relationships = s.relationships.map((r) => {
+        if (r.npcId !== id) return r;
+        const result = talkToNpc(r);
+        message = result.message;
+        return result.relationship;
+      });
+      setNotice(message);
+      return recordMission({ ...s, relationships }, "talk");
+    });
+    scheduleSync();
+  };
+  const giftNpc = (npcId: string, giftId: string) => {
+    const npc = npcs.find((n) => n.id === npcId),
+      gift = gifts.find((g) => g.id === giftId),
+      item = save.inventory.find((i) => i.itemId === giftId && i.quantity > 0);
+    if (!npc || !gift || !item) return setNotice("背包裡沒有這份禮物。");
+    patch(
+      (s) =>
+        recordMission(
+          {
+            ...s,
+            relationships: s.relationships.map((r) =>
+              r.npcId === npcId ? giveGift(r, gift, npc) : r,
+            ),
+            inventory: s.inventory.map((i) =>
+              i.id === item.id ? { ...i, quantity: i.quantity - 1 } : i,
+            ),
+          },
+          "gift",
+        ),
+      "gift",
+      `${npc.name}收下禮物，朋友好感度提升！`,
+    );
+    scheduleSync();
+    setAction("gift");
+  };
+  const propose = (id: string) => {
+    const r = save.relationships.find((x) => x.npcId === id)!,
+      ring = save.inventory.find((x) => x.itemId === "ring" && x.quantity > 0);
+    if (!canMarry(pet, r, !!ring))
+      return setNotice("仍需成年、健康及心情高於 60、朋友好感 95 與寶石戒指。");
+    patch(
+      (s) => ({
+        ...s,
+        pet: marry(s.pet, r, true),
+        inventory: s.inventory.map((i) =>
+          i.id === ring!.id ? { ...i, quantity: i.quantity - 1 } : i,
+        ),
+        achievements: [...new Set([...s.achievements, "星光盟約"])],
+      }),
+      "wedding",
+      "恭喜！你們在花瓣與星光下結為伴侶。",
+    );
+    setAction("wedding");
+  };
+  const beginCoPlay = (id: string) => {
+    const r = startCoPlay(save, id);
+    setNotice(r.reason);
+    if (r.ok) {
+      setSave(r.save);
+      setFriendMode(id);
+      navigate("games");
+    }
+  };
+  const buyItem = (item: ShopItem) => {
+    const r = purchaseItem(save, item);
+    setSave(r.save);
+    setNotice(r.reason);
+    if (r.ok) {
+      sound("coin");
+      scheduleSync();
+    }
+  };
+  const useMed = () => {
+    const r = useMedicine(save);
+    setSave(r.save);
+    setNotice(r.reason);
+    if (r.ok) {
+      sound("success");
+      setAction("happy");
+      scheduleSync();
+    }
+  };
+  const navDisabledReason = (id: View) =>
+    busy
+      ? "動畫進行中，請稍候。"
+      : id === "games" && pet.energy < 8
+        ? "精力不足，先休息再遊玩。"
+        : undefined;
+  return (
+    <div
+      className={`app theme-${theme} ${save.settings.readable ? "readable" : ""} ${save.settings.highContrast ? "contrast" : ""}`}
+    >
+      <a className="skip" href="#main">
+        跳到遊戲內容
+      </a>
+      <header className="topbar">
+        <button className="brand" onClick={() => navigate("home")}>
+          <span className="logo-mark">P</span>
+          <span>
+            <b>PicoPals</b>
+            <small>像素萌寵日記 · v3.0.0</small>
+          </span>
+        </button>
+        <div className="top-stats">
+          <span>
+            <PixelIcon name="coin" />
+            <b>{save.game.coins}</b>
+            <small>星星幣</small>
+          </span>
+          <span>
+            <PixelIcon name="heart" />
+            <b>{pet.affection}</b>
+            <small>萌寵親密度</small>
+          </span>
+          {Boolean(save.settings.showConnectionIndicator) && (
+            <button
+              className={`sync-indicator state-${syncState?.status ?? "local-only"}`}
+              onClick={() => {
+                setView("settings");
+                requestAnimationFrame(() =>
+                  document
+                    .querySelector(".sync-section")
+                    ?.scrollIntoView({ behavior: "smooth" }),
+                );
+              }}
+            >
+              <PixelIcon
+                name={
+                  syncState?.status === "offline"
+                    ? "offline"
+                    : syncState?.status === "error"
+                      ? "warning"
+                      : syncState?.status === "local-only"
+                        ? "cloud"
+                        : "sync"
+                }
+              />
+              <span>
+                {syncState?.status === "syncing"
+                  ? "同步中"
+                  : syncState?.status === "dirty"
+                    ? "有待同步"
+                    : syncState?.status === "error"
+                      ? "同步錯誤"
+                      : syncState?.status === "offline"
+                        ? "目前離線"
+                        : syncState?.status === "synced"
+                          ? "已同步"
+                          : "只存本機"}
+              </span>
+            </button>
+          )}
+          <button
+            className="sound"
+            onClick={() =>
+              patch(
+                (s) => ({
+                  ...s,
+                  settings: {
+                    ...s.settings,
+                    volume: Number(s.settings.volume) > 0 ? 0 : 0.18,
+                  },
+                }),
+                "move",
+              )
+            }
+            aria-label={volume ? "靜音" : "開啟音效"}
+          >
+            {volume ? "♫" : "×"}
+          </button>
+        </div>
+      </header>
+      <main id="main" className="layout">
+        <aside className="pet-column" ref={petArea}>
+          <div className="device" data-busy={busy}>
+            <div className="device-top">
+              <span>◆ PICO PAL ◆</span>
+              <b>{spec.en}</b>
+            </div>
+            <div className="screen-wrap">
+              <div className="screen-status">
+                <span>
+                  {pet.emergencySince
+                    ? "需要緊急照顧"
+                    : pet.isSick
+                      ? "需要照顧"
+                      : pet.lifeStage === "senior"
+                        ? "熟齡萌寵"
+                        : "狀態良好"}
+                </span>
+                <span>
+                  {new Date().toLocaleTimeString("zh-HK", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+              </div>
+              <PetCanvas
+                pet={pet}
+                action={action}
+                theme={theme}
+                equippedDecor={save.equippedDecor}
+                plantState={save.plantState}
+              />
+              <div className="screen-caption">
+                <b>{pet.name}</b>
+                <span>
+                  {spec.name} · {stageLabel(pet.stage)}
+                </span>
+              </div>
+            </div>
+            {busy && <div className="busy-label">動畫進行中…</div>}
+          </div>
+          <nav ref={navRef} className="pet-action-grid" aria-label="主要操作">
+            {nav.map((n, i) => {
+              const reason = navDisabledReason(n.id);
+              return (
+                <button
+                  key={n.id}
+                  className={view === n.id ? "selected" : ""}
+                  aria-current={view === n.id ? "page" : undefined}
+                  title={reason}
+                  onFocus={() => setSelectedNav(i)}
+                  onClick={() => navigate(n.id)}
+                  disabled={Boolean(reason)}
+                >
+                  <PixelIcon name={n.icon} />
+                  <span>{n.label}</span>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="quick-bars">
+            <Meter icon="heart" label="心情" value={pet.happiness} />
+            <Meter icon="feed" label="飽足" value={pet.fullness} />
+            <Meter icon="health" label="健康" value={pet.health} />
+            <Meter icon="heart" label="萌寵親密" value={pet.affection} />
+          </div>
+          {pet.emergencySince && (
+            <button className="care-alert" onClick={() => navigate("status")}>
+              <b>！至少 12 小時挽救期</b>
+              <span>藥盒、健康餐、清潔、休息與陪伴都可幫助牠 →</span>
+            </button>
+          )}
+        </aside>
+        <section className="content-column">
+          {view === "home" ? (
+            <Home
+              save={save}
+              spec={spec}
+              onNavigate={navigate}
+              onRest={() => {
+                setSave((s) => {
+                  if (!s) return s;
+                  const advanced = advanceSaveTime(s).save;
+                  return recordMission(
+                    { ...advanced, pet: restPet(advanced.pet) },
+                    "sleep",
+                  );
+                });
+                scheduleSync();
+                sound("sleep");
+                setNotice(
+                  pet.isSleeping ? "已經開燈起床。" : "晚安，好好休息吧！",
+                );
+              }}
+              onPet={() => {
+                const r = petPet(save.pet);
+                setSave(recordMission({ ...save, pet: r.pet }, "pet"));
+                setNotice(r.reason);
+                if (r.earned) sound("gift");
+                scheduleSync();
+              }}
+              onWater={() => {
+                const r = waterPlant(save);
+                setSave(r.ok ? recordMission(r.save, "water") : r.save);
+                setNotice(r.reason);
+                if (r.ok) scheduleSync();
+              }}
+              onClaim={() => {
+                const r = claimDailyReward(save);
+                setSave(r.save);
+                setNotice(r.reason);
+                if (r.ok) scheduleSync();
+              }}
+              onGuide={(step) => {
+                const progress = completeOnboardingStep(
+                    save.onboardingProgress,
+                    step,
+                  ),
+                  next = rewardOnboarding({
+                    ...save,
+                    onboardingProgress: progress,
+                  });
+                setSave(next);
+                if (progress.completed)
+                  setNotice("首次引導完成：獲得新手星光緞帶與 10 星星幣！");
+              }}
+              onSkip={() =>
+                setSave({
+                  ...save,
+                  onboardingProgress: {
+                    ...save.onboardingProgress,
+                    active: false,
+                    skipped: true,
+                  },
+                })
+              }
+            />
+          ) : view === "feed" ? (
+            <FeedPanel
+              save={save}
+              busy={busy}
+              onFeed={animateFeed}
+              onBack={() => navigate("home")}
+            />
+          ) : view === "games" ? (
+            <MiniGames
+              companion={
+                friendMode ? { npcId: friendMode, stage: npcStage } : undefined
+              }
+              onFinish={finishGame}
+              onBack={() => {
+                setFriendMode(null);
+                navigate("home");
+              }}
+            />
+          ) : view === "clean" ? (
+            <CleanPanel
+              save={save}
+              busy={busy}
+              onClean={animateClean}
+              onBack={() => navigate("home")}
+            />
+          ) : view === "status" ? (
+            <StatusPanel
+              save={save}
+              onMedicine={useMed}
+              onBack={() => navigate("home")}
+            />
+          ) : view === "bag" ? (
+            <BagPanel
+              save={save}
+              setSave={setSave}
+              onMedicine={useMed}
+              onNotice={setNotice}
+              onBack={() => navigate("home")}
+            />
+          ) : view === "social" ? (
+            <SocialPanel
+              save={save}
+              stage={npcStage}
+              onTalk={talk}
+              onGift={giftNpc}
+              onPropose={propose}
+              onCoPlay={beginCoPlay}
+              onReply={(id) => setSave(replyToPost(save, id))}
+              onBack={() => navigate("home")}
+            />
+          ) : view === "shop" ? (
+            <ShopPanel
+              save={save}
+              onBuy={buyItem}
+              onBack={() => navigate("home")}
+            />
+          ) : (
+            <SettingsPanel
+              save={save}
+              installEvent={installEvent}
+              setSave={setSave}
+              setStarted={setStarted}
+              onNotice={setNotice}
+              onBack={() => navigate("home")}
+              syncState={syncState}
+              cloudUser={cloudUser}
+              onSync={syncNow}
+              onRefreshSync={refreshSync}
+            />
+          )}
+        </section>
+      </main>
+      {!started && (
+        <Onboarding
+          save={save}
+          setSave={setSave}
+          onStart={() => {
+            setStarted(true);
+            sound("evolve");
+            setAction("evolve");
+          }}
+        />
+      )}
+      {!pet.isAlive && (
+        <DepartureModal
+          save={save}
+          onRebirth={() => {
+            setSave(rebirth(save));
+            setStarted(false);
+            setAction("evolve");
+            setNotice("上一代留下了一點星光，新的相遇開始了。");
+          }}
+        />
+      )}
+      {offline && (
+        <OfflineModal
+          summary={offline}
+          name={pet.name}
+          onClose={() => setOffline(null)}
+        />
+      )}{" "}
+      {notice && (
+        <div className="toast" role="status">
+          <span>{notice}</span>
+          <button onClick={() => setNotice("")} aria-label="關閉">
+            ×
+          </button>
+        </div>
+      )}
+      {updateReady && (
+        <div className="update">
+          <span>
+            新版本加入：跨裝置雲端同步、全新角色動畫、每日星光任務、星光朋友圈。
+          </span>
+          <button
+            onClick={async () => {
+              await persistSave(save, {
+                trackChange: true,
+                action: "app-update",
+              });
+              if (syncState?.cloudSyncEnabled && navigator.onLine)
+                await syncNow();
+              updateReady.waiting?.postMessage({ type: "SKIP_WAITING" });
+              location.reload();
+            }}
+          >
+            立即更新
+          </button>
+          <button onClick={() => setUpdateReady(null)}>稍後</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
-function Home({save,spec,onNavigate,onRest,onPet,onWater}:{save:SaveFile;spec:ReturnType<typeof bySpecies>;onNavigate:(v:View)=>void;onRest:()=>void;onPet:()=>void;onWater:()=>void}){const p=save.pet;return <section className="home-panel"><div className="welcome"><div><p className="eyebrow">GENERATION {save.game.generation} · {lifeLabel(p.lifeStage)}</p><h1>{greeting()}，<br/><em>{p.name}</em>正在等你！</h1><p>{spec.description} {spec.hint}</p></div><button className="mood-card" onClick={onPet}><span>{p.affection>=60?"◕‿◕":"◕⌣◕"}</span><b>撫摸／陪伴</b><small>{affectionLevel(p.affection)}</small></button></div><div className="today-grid"><button onClick={()=>onNavigate("feed")}><i>♨</i><span><b>今日餐桌</b><small>正餐 {p.mealsToday} · 零食 {p.snacksToday}</small></span><strong>→</strong></button><button onClick={()=>onNavigate("games")}><i>✦</i><span><b>最佳紀錄</b><small>接心 {save.game.highScores.catch??0} · 跳繩 {save.game.highScores.ribbon??0}</small></span><strong>→</strong></button><button onClick={()=>onNavigate("social")}><i>♥</i><span><b>星光朋友</b><small>{p.stage==="egg"?"孵化後便會認識朋友":"朋友造型會同步成長"}</small></span><strong>→</strong></button><button onClick={onRest}><i>{p.isSleeping?"☀":"☾"}</i><span><b>{p.isSleeping?"開燈起床":"關燈休息"}</b><small>精力 {Math.round(p.energy)}%</small></span><strong>→</strong></button>{save.plantState.placed&&<button onClick={onWater}><i>♠</i><span><b>為盆栽澆水</b><small>成長階段 {save.plantState.growth+1}/3</small></span><strong>→</strong></button>}</div><div className="daily-note"><span>✿</span><div><b>最近親密提升</b><p>{p.affectionLastReason??"新的相遇"} · 目前「{affectionLevel(p.affection)}」</p></div></div></section>}
-function FeedPanel({save,busy,onFeed,onBack}:{save:SaveFile;busy:boolean;onFeed:(id:string)=>void;onBack:()=>void}){return <Panel title="星光餐桌" eyebrow="KITCHEN" onBack={onBack}><p className="lead">選擇後會立即返回萌寵房間，播放完整約兩秒的投餵動畫。</p><div className="item-grid">{foods.map(f=>{const q=save.inventory.find(i=>i.itemId===f.id)?.quantity??0,fav=bySpecies(save.pet.speciesId).favoriteFood===f.name;return <article className="item-card" key={f.id}><span className="item-icon">{f.icon}</span><div><small>{fav?"★ 最喜歡":"一般餐點"}</small><h3>{f.name}</h3><p>飽足 +{f.fullness} · 心情 +{f.happiness}<br/>萌寵親密 +{fav?3:1}</p></div><button disabled={!q||busy} onClick={()=>onFeed(f.id)}>{q?`餵飼 · 還有 ${q}`:"需要購買"}</button></article>})}</div></Panel>}
-function CleanPanel({save,busy,onClean,onBack}:{save:SaveFile;busy:boolean;onClean:(k:"poop"|"sweep"|"bath")=>void;onBack:()=>void}){const p=save.pet;return <Panel title="閃亮清潔隊" eyebrow="CLEAN TIME" onBack={onBack}><div className="clean-score"><div className="score-ring" style={{"--score":`${p.cleanliness*3.6}deg`} as React.CSSProperties}><b>{Math.round(p.cleanliness)}</b><small>清潔度</small></div><div><h3>選擇後返回房間播放動畫</h3><p>現有 {p.poopCount} 件星塵穢物；每種清潔都有獨立逐格效果。</p></div></div><div className="clean-actions"><button disabled={!p.poopCount||busy} onClick={()=>onClean("poop")}><i>✧</i><b>清理穢物</b><small>逐件消失 · 親密 +2</small></button><button disabled={busy} onClick={()=>onClean("sweep")}><i>⌁</i><b>小掃帚</b><small>左右掃兩次 · 親密 +1</small></button><button disabled={busy} onClick={()=>onClean("bath")}><i>○</i><b>泡泡澡</b><small>泡泡與水珠 · 親密 +3</small></button></div></Panel>}
-function StatusPanel({save,onMedicine,onBack}:{save:SaveFile;onMedicine:()=>void;onBack:()=>void}){const p=save.pet,s=bySpecies(p.speciesId),next=p.nextEvolutionAt?Math.max(0,(p.nextEvolutionAt-Date.now())/60000):0,week=(p.affectionHistory??[]).filter(x=>Date.now()-x.at<7*86400000);return <Panel title="萌寵手帳" eyebrow="PET PROFILE" onBack={onBack}><div className="profile"><SpeciesPreviewCanvas speciesId={p.speciesId}/><div><h3>{p.name} <small>第 {save.game.generation} 代</small></h3><p>{s.name} · {stageLabel(p.stage)} · {lifeLabel(p.lifeStage)}</p><span>{new Date(p.birthAt).toLocaleString("zh-HK")} 出生 · 約 {Math.floor(p.ageMinutes/60)} 小時大</span></div></div><div className="stat-grid"><Stat label="健康" value={p.health}/><Stat label="飽足" value={p.fullness}/><Stat label="心情" value={p.happiness}/><Stat label="清潔" value={p.cleanliness}/><Stat label="精力" value={p.energy}/><Stat label="萌寵親密度" value={p.affection}/></div><div className="info-grid"><article><small>成長</small><b>{p.stage==="adult"?"已經成年":`約 ${formatMinutes(next)} 後進入下一階段`}</b><p>生命旅程約 14–28 日；不顯示精確倒數。</p></article><article><small>親密等級</small><b>{affectionLevel(p.affection)}</b><p>{p.affectionLastReason??"新的相遇"}<br/>七日紀錄 {week.length} 次；{affectionNext(p.affection)}</p></article></div>{(p.isSick||p.emergencySince)&&<div className="sick-box"><div><b>{p.emergencySince?"需要緊急照顧":"照顧提示："+(p.sicknessType??"不舒服")}</b><p>{p.emergencySince?"至少有 12 小時挽救時間。":"可先休息、清潔、健康餐或陪伴；即時藥物需要藥盒。"}</p></div><button onClick={onMedicine} disabled={!save.inventory.some(i=>i.itemId==="medicine"&&i.quantity>0)}>使用星光藥盒</button></div>}</Panel>}
-function BagPanel({save,setSave,onMedicine,onNotice,onBack}:{save:SaveFile;setSave:React.Dispatch<React.SetStateAction<SaveFile|null>>;onMedicine:()=>void;onNotice:(s:string)=>void;onBack:()=>void}){const[selected,setSelected]=useState(save.album[0]??"stardust-egg"),held=save.inventory.filter(i=>i.quantity>0),detail=bySpecies(selected),entry=save.albumEntries.find(a=>a.speciesId===selected);const plant=()=>{const r=placePlant(save);setSave(r.save);onNotice(r.reason)};return <Panel title="背包、裝飾與圖鑑" eyebrow="COLLECTION" onBack={onBack}><h3 className="section-title">背包物品 <small>{held.reduce((a,b)=>a+b.quantity,0)} 件</small></h3><div className="bag-list v2">{held.map(i=>{const item=byShopItem(i.itemId);return <div key={i.id}><span>{item?.icon??"✦"}</span><b>{item?.name??i.itemId}<small>{item?.useAt}<br/>{item?itemUseReason(save,item):""}</small></b><em>× {i.quantity}</em>{i.itemId==="medicine"&&<button onClick={onMedicine} disabled={!save.pet.isSick&&!save.pet.emergencySince}>使用</button>}{i.itemId==="plant"&&<button onClick={plant} disabled={save.plantState.placed}>放房間</button>}</div>})}</div><h3 className="section-title">永久裝飾</h3><div className="decor-list">{["wallpaper","nightlight"].map(id=>{const item=byShopItem(id)!,owned=save.unlockedDecor.includes(id),equipped=save.equippedDecor.includes(id);return <button key={id} disabled={!owned} onClick={()=>setSave(equipDecor(save,id))}><i>{item.icon}</i><b>{item.name}</b><small>{owned?(equipped?"已裝備 · 點擊移除":"已擁有 · 點擊裝備"):"尚未擁有"}</small></button>})}</div><h3 className="section-title">進化圖鑑 <small>{save.album.length}/{species.length}</small></h3><div className="album v2">{species.map(s=><button key={s.id} className={save.album.includes(s.id)&&selected===s.id?"selected":save.album.includes(s.id)?"":"locked"} onClick={()=>setSelected(s.id)}><SpeciesPreviewCanvas speciesId={s.id} silhouette={!save.album.includes(s.id)} size={62}/><b>{save.album.includes(s.id)?s.name:"神秘形態"}</b></button>)}</div><div className="album-detail"><SpeciesPreviewCanvas speciesId={detail.id} silhouette={!save.album.includes(detail.id)} size={118}/><div><h3>{save.album.includes(detail.id)?detail.name:"尚未解鎖"}</h3><p>{stageLabel(detail.stage)} · {detail.personality} · 喜歡 {detail.favoriteFood}／{detail.favoriteGift}</p><p>來源：{detail.from.length?detail.from.map(x=>bySpecies(x).name).join("、"):"星光起點"}<br/>{detail.hint}</p>{entry&&<small>首次解鎖：{new Date(entry.unlockedAt).toLocaleDateString("zh-HK")} · 曾養成 {entry.raisedCount} 次</small>}</div></div><h3 className="section-title">星光紀念冊 <small>{save.game.history.length} 代</small></h3><div className="memorial-list">{save.game.history.map(h=><div key={h.bornAt}><SpeciesPreviewCanvas speciesId={h.speciesId} size={54}/><b>{h.name}</b><small>{h.careGrade}照顧 · {h.departureReason==="natural"?"自然化成星光":"在陪伴中離去"}</small></div>)}</div></Panel>}
-function SocialPanel({save,stage,onTalk,onGift,onPropose,onCoPlay,onBack}:{save:SaveFile;stage:NpcStage;onTalk:(id:string)=>void;onGift:(id:string,g:string)=>void;onPropose:(id:string)=>void;onCoPlay:(id:string)=>void;onBack:()=>void}){const[selected,setSelected]=useState("aro"),[gift,setGift]=useState(""),npc=npcs.find(n=>n.id===selected)!,rel=save.relationships.find(r=>r.npcId===selected)!;if(save.pet.stage==="egg")return <EmptyPanel title="星塵蛋還未認識朋友" text="孵化成嬰兒後，六位星光朋友會以嬰兒造型前來相遇。" action="回到房間" onAction={onBack}/>;const look=npc.looks[stage],next=rel.affection>=95?0:[20,40,60,80,95].find(x=>x>rel.affection)!-rel.affection,hasRing=save.inventory.some(i=>i.itemId==="ring"&&i.quantity>0),proposalReady=canMarry(save.pet,rel,hasRing),proposalReason=itemUseReason(save,byShopItem("ring")!),coPlayReady=["aro","pico"].includes(npc.id)&&save.inventory.some(i=>i.itemId==="token"&&i.quantity>0);return <Panel title="星光朋友圈" eyebrow={`${stage.toUpperCase()} FRIENDS`} onBack={onBack}><div className="npc-tabs">{npcs.map(n=><button className={selected===n.id?"active":""} onClick={()=>setSelected(n.id)} key={n.id}><NpcPreviewCanvas npcId={n.id} stage={stage} size={44}/><span>{n.name}<small>{n.looks[stage].name}</small></span></button>)}</div><div className="npc-detail"><NpcPreviewCanvas npcId={npc.id} stage={stage} size={230} animation="talk"/><div className="npc-copy"><p className="eyebrow">{npc.personality} · {relationLabel(rel.affection)}</p><h3>{npc.name} <small>{look.name}</small></h3><blockquote>「{look.dialogue[Math.floor(Date.now()/86400000)%look.dialogue.length]}」</blockquote><p className="npc-preference">{look.feature} · {look.preference}</p><div className="rel-bar"><i style={{width:`${rel.affection}%`}}/><span>朋友好感度 {rel.affection}/100 {next?`· 下一階段還差 ${next}`:"· 可以求婚"}</span></div><div className="social-actions"><button onClick={()=>onTalk(npc.id)}>今日對話</button><select value={gift} onChange={e=>setGift(e.target.value)}><option value="">選擇禮物…</option>{gifts.map(g=><option key={g.id} value={g.id} disabled={!save.inventory.some(i=>i.itemId===g.id&&i.quantity>0)}>{g.name}</option>)}</select><button disabled={!gift} title={!gift?"先選擇背包內的禮物。":undefined} onClick={()=>{onGift(npc.id,gift);setGift("")}}>送禮</button><button disabled={!coPlayReady} title={!coPlayReady?"只有阿洛或皮可可使用，而且需要遊戲代幣。":undefined} onClick={()=>onCoPlay(npc.id)}>◎ 朋友同玩</button><button className="proposal" disabled={!proposalReady} title={!proposalReady?proposalReason:undefined} onClick={()=>onPropose(npc.id)}>◇ 求婚</button></div></div></div></Panel>}
-function ShopPanel({save,onBuy,onBack}:{save:SaveFile;onBuy:(i:ShopItem)=>void;onBack:()=>void}){const[tab,setTab]=useState<"food"|"gift"|"care">("food"),items=shopItems.filter(i=>tab==="food"?i.category==="food":tab==="gift"?["gift","social","proposal"].includes(i.category):["medicine","decor"].includes(i.category));return <Panel title="月光小商店" eyebrow="USABLE ITEMS v2" onBack={onBack}><div className="shop-head"><div className="tabs"><button className={tab==="food"?"active":""} onClick={()=>setTab("food")}>餐點</button><button className={tab==="gift"?"active":""} onClick={()=>setTab("gift")}>禮物與社交</button><button className={tab==="care"?"active":""} onClick={()=>setTab("care")}>照顧與裝飾</button></div><b>◆ {save.game.coins}</b></div><div className="shop-grid">{items.map(i=>{const owned=i.unique&&save.unlockedDecor.includes(i.id),disabled=owned||(i.id==="ring"&&!!save.pet.spouseNpcId);return <article key={i.id}><span>{i.icon}</span><div><h3>{i.name}</h3><p>{i.description}<br/>{i.consumable?"消耗品":"永久商品"} · 使用位置：{i.useAt}</p></div><button disabled={disabled} onClick={()=>onBuy(i)}>{owned?"已擁有":`◆ ${i.price}`}</button></article>})}</div></Panel>}
-function SettingsPanel({save,installEvent,setSave,setStarted,onNotice,onBack}:{save:SaveFile;installEvent:BeforeInstallPromptEvent|null;setSave:React.Dispatch<React.SetStateAction<SaveFile|null>>;setStarted:(b:boolean)=>void;onNotice:(s:string)=>void;onBack:()=>void}){const file=useRef<HTMLInputElement>(null),setting=(k:string,v:unknown)=>setSave(s=>s?{...s,settings:{...s.settings,[k]:v}}:s);const exportJson=()=>{const blob=new Blob([JSON.stringify({...save,exportedAt:Date.now()},null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`picopals-v2-${new Date().toISOString().slice(0,10)}.json`;a.click();URL.revokeObjectURL(a.href)};const doImport=async(e:React.ChangeEvent<HTMLInputElement>)=>{const f=e.target.files?.[0];if(!f)return;try{const data=await importSave(JSON.parse(await f.text()));setSave(data);onNotice(`Schema ${data.schemaVersion} 存檔已驗證並匯入。`)}catch(err){onNotice(err instanceof Error?err.message:"存檔無效")}};return <Panel title="設定與存檔" eyebrow="SCHEMA v2" onBack={onBack}><div className="settings-list"><section><h3>外觀</h3><label>機身主題<select value={String(save.settings.theme)} onChange={e=>setting("theme",e.target.value)}>{Object.entries(themes).map(([v,n])=><option value={v} key={v}>{n}</option>)}</select></label><label className="switch">易讀字體<input type="checkbox" checked={Boolean(save.settings.readable)} onChange={e=>setting("readable",e.target.checked)}/><i/></label><label className="switch">高對比模式<input type="checkbox" checked={Boolean(save.settings.highContrast)} onChange={e=>setting("highContrast",e.target.checked)}/><i/></label></section><section><h3>聲音</h3><label>音效音量<input type="range" min="0" max="0.35" step="0.01" value={Number(save.settings.volume)} onChange={e=>setting("volume",Number(e.target.value))}/></label><p>目前資料版本：Schema v{save.schemaVersion}<br/>商品定義：v{save.itemDefinitionsVersion}</p></section><section><h3>PWA 安裝</h3><p>安裝後可像 App 一樣啟動並離線遊玩。</p><button disabled={!installEvent} onClick={()=>void installEvent?.prompt()}>{installEvent?"安裝 PicoPals":"瀏覽器已安裝或暫不支援"}</button></section><section><h3>備份與安全</h3><div className="button-row"><button onClick={exportJson}>匯出 JSON</button><button onClick={()=>file.current?.click()}>匯入 JSON</button><button onClick={()=>void restoreSnapshot().then(s=>{setSave(s);onNotice("已恢復上一個自動快照。")}).catch(e=>onNotice(String(e.message)))}>恢復快照</button></div><input ref={file} hidden type="file" accept="application/json" onChange={doImport}/><button className="danger" onClick={()=>{if(confirm("確定重設？")&&confirm("最後確認：建議先匯出備份。"))void resetDatabase().then(()=>{const s=newSave();setSave(s);setStarted(false)})}}>重設遊戲</button></section></div></Panel>}
-function Onboarding({save,setSave,onStart}:{save:SaveFile;setSave:React.Dispatch<React.SetStateAction<SaveFile|null>>;onStart:()=>void}){const[name,setName]=useState("波波");return <div className="modal-back"><div className="onboard"><SpeciesPreviewCanvas speciesId="stardust-egg" size={120}/><p className="eyebrow">GENERATION {save.game.generation}</p><h2>一點星光，<br/>一段新的相遇。</h2>{save.legacyTraits.equipped&&<p>上一代留下「{legacyLabel(save.legacyTraits.equipped)}」與純外觀星光。</p>}<label>萌寵名字<input maxLength={10} value={name} onChange={e=>setName(e.target.value)}/></label><button className="primary" disabled={!name.trim()} onClick={()=>{setSave({...save,pet:{...save.pet,name:name.trim()}});onStart()}}>開始孵蛋 ✦</button></div></div>}
-function DepartureModal({save,onRebirth}:{save:SaveFile;onRebirth:()=>void}){const p=save.pet;return <div className="modal-back"><div className="offline-modal departure"><span>✦</span><p className="eyebrow">STARLIGHT MEMORIAL</p><h2>{p.name}化成溫柔星光</h2><SpeciesPreviewCanvas speciesId={p.speciesId} size={130}/><p>一起生活了約 {formatMinutes(p.ageMinutes)}，最終形態是 {bySpecies(p.speciesId).name}。<br/>照顧評分 {Math.round(p.lifetimeCareScore)} · {p.departureReason==="natural"?"自然完成生命旅程":"經過緊急照顧期後離去"}</p><p>星星幣、背包、裝飾、圖鑑、成就、紀錄及設定都會保留；婚姻與成長狀態會重設。</p><button className="primary" onClick={onRebirth}>孵化第 {save.game.generation+1} 代星塵蛋</button></div></div>}
-function OfflineModal({summary,name,onClose}:{summary:OfflineSummary;name:string;onClose:()=>void}){return <div className="modal-back"><div className="offline-modal"><span>☾</span><p className="eyebrow">WELCOME BACK</p><h2>你離開了 {formatMinutes(summary.minutes)}</h2>{summary.clockAnomaly&&<p className="warning">偵測到系統時間倒退，年齡沒有倒退。</p>}<h3>{name} 的離線變化</h3><dl><div><dt>飽足感</dt><dd>{summary.fullness}</dd></div><div><dt>心情</dt><dd>{summary.happiness}</dd></div><div><dt>清潔度</dt><dd>{summary.cleanliness}</dd></div><div><dt>穢物</dt><dd>+{summary.poops}</dd></div>{summary.evolutions.map(e=><div key={e.at}><dt>進化</dt><dd>{bySpecies(e.fromSpeciesId).name} → {bySpecies(e.toSpeciesId).name}</dd></div>)}</dl><button className="primary" onClick={onClose}>回到萌寵身邊</button></div></div>}
-function Panel({title,eyebrow,onBack,children}:{title:string;eyebrow:string;onBack:()=>void;children:React.ReactNode}){return <section className="panel"><div className="panel-head"><div><p className="eyebrow">{eyebrow}</p><h2>{title}</h2></div><button className="icon-btn" onClick={onBack} aria-label="返回主畫面">×</button></div>{children}</section>}
-function EmptyPanel({title,text,action,onAction}:{title:string;text:string;action:string;onAction:()=>void}){return <section className="panel empty"><span>☾</span><h2>{title}</h2><p>{text}</p><button className="primary" onClick={onAction}>{action}</button></section>}
-function Meter({icon,label,value}:{icon:string;label:string;value:number}){return <div><span>{icon}</span><b>{label}</b><i><em style={{width:`${value}%`}}/></i><small>{Math.round(value)}</small></div>}
-function Stat({label,value}:{label:string;value:number}){return <div><span><b>{label}</b><em>{Math.round(value)}</em></span><i><b style={{width:`${value}%`}}/></i><small>{value<25?"需要照顧":value<60?"普通":"狀態良好"}</small></div>}
-const stageLabel=(s:Stage)=>({egg:"蛋",baby:"嬰兒",child:"幼兒",teen:"青少年",adult:"成年"})[s];
-const lifeLabel=(s:SaveFile["pet"]["lifeStage"])=>({young:"年輕萌寵",mature:"成熟萌寵",senior:"熟齡萌寵"})[s];
-const affectionLevel=(n:number)=>n>=95?"永遠的伙伴":n>=80?"深深依戀":n>=60?"親暱伙伴":n>=40?"普通伙伴":n>=20?"開始信任":"有點害羞";
-const affectionNext=(n:number)=>n>=95?"已解鎖最佳傳承":n>=80?`還差 ${95-n} 解鎖永遠的伙伴`:n>=60?`還差 ${80-n} 提高照顧效果`:n>=40?`還差 ${60-n} 解鎖親暱待機`:n>=20?`還差 ${40-n} 成為普通伙伴`:`還差 ${20-n} 開始信任`;
-const relationLabel=(n:number)=>n>=95?"可以求婚":n>=80?"戀人":n>=60?"心動":n>=40?"好朋友":n>=20?"普通朋友":"初次認識";
-const legacyLabel=(t:string)=>({active:"活力星光",healthy:"健康星光",clean:"潔淨星光",affectionate:"親愛星光",calm:"平靜星光",sweet:"甜蜜星光"} as Record<string,string>)[t]??t;
-const formatMinutes=(m:number)=>m>=1440?`${Math.floor(m/1440)} 日 ${Math.floor(m%1440/60)} 小時`:m>=60?`${Math.floor(m/60)} 小時 ${Math.floor(m%60)} 分鐘`:`${Math.floor(m)} 分鐘`;
-const greeting=()=>new Date().getHours()<12?"早晨":new Date().getHours()<18?"午安":"晚上好";
-interface BeforeInstallPromptEvent extends Event{prompt:()=>Promise<void>;userChoice:Promise<{outcome:"accepted"|"dismissed"}>}
+function Home({
+  save,
+  spec,
+  onNavigate,
+  onRest,
+  onPet,
+  onWater,
+  onClaim,
+  onGuide,
+  onSkip,
+}: {
+  save: SaveFile;
+  spec: ReturnType<typeof bySpecies>;
+  onNavigate: (v: View) => void;
+  onRest: () => void;
+  onPet: () => void;
+  onWater: () => void;
+  onClaim: () => void;
+  onGuide: (step: string) => void;
+  onSkip: () => void;
+}) {
+  const p = save.pet;
+  return (
+    <section className="home-panel">
+      <OnboardingGuide
+        save={save}
+        onSkip={onSkip}
+        onRestart={() => undefined}
+        onStep={onGuide}
+      />
+      <div className="welcome">
+        <div>
+          <p className="eyebrow">
+            GENERATION {save.game.generation} · {lifeLabel(p.lifeStage)}
+          </p>
+          <h1>
+            {greeting()}，<br />
+            <em>{p.name}</em>正在等你！
+          </h1>
+          <p>
+            {spec.description} {spec.hint}
+          </p>
+        </div>
+        <button className="mood-card" onClick={onPet}>
+          <span>{p.affection >= 60 ? "◕‿◕" : "◕⌣◕"}</span>
+          <b>撫摸／陪伴</b>
+          <small>{affectionLevel(p.affection)}</small>
+        </button>
+      </div>
+      <div className="today-grid">
+        <button onClick={() => onNavigate("feed")}>
+          <PixelIcon name="feed" />
+          <span>
+            <b>今日餐桌</b>
+            <small>
+              正餐 {p.mealsToday} · 零食 {p.snacksToday}
+            </small>
+          </span>
+          <strong>→</strong>
+        </button>
+        <button onClick={() => onNavigate("games")}>
+          <PixelIcon name="games" />
+          <span>
+            <b>最佳紀錄</b>
+            <small>
+              接心 {save.game.highScores.catch ?? 0} · 跳繩{" "}
+              {save.game.highScores.ribbon ?? 0}
+            </small>
+          </span>
+          <strong>→</strong>
+        </button>
+        <button onClick={() => onNavigate("social")}>
+          <PixelIcon name="social" />
+          <span>
+            <b>星光朋友</b>
+            <small>
+              {p.stage === "egg" ? "孵化後便會認識朋友" : "朋友造型會同步成長"}
+            </small>
+          </span>
+          <strong>→</strong>
+        </button>
+        <button onClick={onRest}>
+          <PixelIcon name="sleep" />
+          <span>
+            <b>{p.isSleeping ? "開燈起床" : "關燈休息"}</b>
+            <small>精力 {Math.round(p.energy)}%</small>
+          </span>
+          <strong>→</strong>
+        </button>
+        {save.plantState.placed && (
+          <button onClick={onWater}>
+            <PixelIcon name="clean" />
+            <span>
+              <b>為盆栽澆水</b>
+              <small>成長階段 {save.plantState.growth + 1}/3</small>
+            </span>
+            <strong>→</strong>
+          </button>
+        )}
+      </div>
+      <div className="long-term-grid">
+        <GrowthHint save={save} />
+        <DailyMissions save={save} onClaim={onClaim} />
+      </div>
+      <div className="daily-note">
+        <span>✿</span>
+        <div>
+          <b>最近親密提升</b>
+          <p>
+            {p.affectionLastReason ?? "新的相遇"} · 目前「
+            {affectionLevel(p.affection)}」
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+function FeedPanel({
+  save,
+  busy,
+  onFeed,
+  onBack,
+}: {
+  save: SaveFile;
+  busy: boolean;
+  onFeed: (id: string) => void;
+  onBack: () => void;
+}) {
+  return (
+    <Panel title="星光餐桌" eyebrow="KITCHEN" onBack={onBack}>
+      <p className="lead">
+        選擇後會立即返回萌寵房間，播放完整約兩秒的投餵動畫。
+      </p>
+      <div className="item-grid">
+        {foods.map((f) => {
+          const q =
+              save.inventory.find((i) => i.itemId === f.id)?.quantity ?? 0,
+            fav = bySpecies(save.pet.speciesId).favoriteFood === f.name;
+          return (
+            <article className="item-card" key={f.id}>
+              <span className="item-icon">{f.icon}</span>
+              <div>
+                <small>{fav ? "★ 最喜歡" : "一般餐點"}</small>
+                <h3>{f.name}</h3>
+                <p>
+                  飽足 +{f.fullness} · 心情 +{f.happiness}
+                  <br />
+                  萌寵親密 +{fav ? 3 : 1}
+                </p>
+              </div>
+              <button disabled={!q || busy} onClick={() => onFeed(f.id)}>
+                {q ? `餵飼 · 還有 ${q}` : "需要購買"}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+function CleanPanel({
+  save,
+  busy,
+  onClean,
+  onBack,
+}: {
+  save: SaveFile;
+  busy: boolean;
+  onClean: (k: "poop" | "sweep" | "bath") => void;
+  onBack: () => void;
+}) {
+  const p = save.pet;
+  return (
+    <Panel title="閃亮清潔隊" eyebrow="CLEAN TIME" onBack={onBack}>
+      <div className="clean-score">
+        <div
+          className="score-ring"
+          style={
+            { "--score": `${p.cleanliness * 3.6}deg` } as React.CSSProperties
+          }
+        >
+          <b>{Math.round(p.cleanliness)}</b>
+          <small>清潔度</small>
+        </div>
+        <div>
+          <h3>選擇後返回房間播放動畫</h3>
+          <p>現有 {p.poopCount} 件星塵穢物；每種清潔都有獨立逐格效果。</p>
+        </div>
+      </div>
+      <div className="clean-actions">
+        <button disabled={!p.poopCount || busy} onClick={() => onClean("poop")}>
+          <i>✧</i>
+          <b>清理穢物</b>
+          <small>逐件消失 · 親密 +2</small>
+        </button>
+        <button disabled={busy} onClick={() => onClean("sweep")}>
+          <i>⌁</i>
+          <b>小掃帚</b>
+          <small>左右掃兩次 · 親密 +1</small>
+        </button>
+        <button disabled={busy} onClick={() => onClean("bath")}>
+          <i>○</i>
+          <b>泡泡澡</b>
+          <small>泡泡與水珠 · 親密 +3</small>
+        </button>
+      </div>
+    </Panel>
+  );
+}
+function StatusPanel({
+  save,
+  onMedicine,
+  onBack,
+}: {
+  save: SaveFile;
+  onMedicine: () => void;
+  onBack: () => void;
+}) {
+  const p = save.pet,
+    s = bySpecies(p.speciesId),
+    next = p.nextEvolutionAt
+      ? Math.max(0, (p.nextEvolutionAt - Date.now()) / 60000)
+      : 0,
+    week = (p.affectionHistory ?? []).filter(
+      (x) => Date.now() - x.at < 7 * 86400000,
+    );
+  return (
+    <Panel title="萌寵手帳" eyebrow="PET PROFILE" onBack={onBack}>
+      <div className="profile">
+        <SpeciesPreviewCanvas speciesId={p.speciesId} />
+        <div>
+          <h3>
+            {p.name} <small>第 {save.game.generation} 代</small>
+          </h3>
+          <p>
+            {s.name} · {stageLabel(p.stage)} · {lifeLabel(p.lifeStage)}
+          </p>
+          <span>
+            {new Date(p.birthAt).toLocaleString("zh-HK")} 出生 · 約{" "}
+            {Math.floor(p.ageMinutes / 60)} 小時大
+          </span>
+        </div>
+      </div>
+      <div className="stat-grid">
+        <Stat label="健康" value={p.health} />
+        <Stat label="飽足" value={p.fullness} />
+        <Stat label="心情" value={p.happiness} />
+        <Stat label="清潔" value={p.cleanliness} />
+        <Stat label="精力" value={p.energy} />
+        <Stat label="萌寵親密度" value={p.affection} />
+      </div>
+      <div className="info-grid">
+        <article>
+          <small>成長</small>
+          <b>
+            {p.stage === "adult"
+              ? "已經成年"
+              : `約 ${formatMinutes(next)} 後進入下一階段`}
+          </b>
+          <p>生命旅程約 14–28 日；不顯示精確倒數。</p>
+        </article>
+        <article>
+          <small>親密等級</small>
+          <b>{affectionLevel(p.affection)}</b>
+          <p>
+            {p.affectionLastReason ?? "新的相遇"}
+            <br />
+            七日紀錄 {week.length} 次；{affectionNext(p.affection)}
+          </p>
+        </article>
+      </div>
+      {(p.isSick || p.emergencySince) && (
+        <div className="sick-box">
+          <div>
+            <b>
+              {p.emergencySince
+                ? "需要緊急照顧"
+                : "照顧提示：" + (p.sicknessType ?? "不舒服")}
+            </b>
+            <p>
+              {p.emergencySince
+                ? "至少有 12 小時挽救時間。"
+                : "可先休息、清潔、健康餐或陪伴；即時藥物需要藥盒。"}
+            </p>
+          </div>
+          <button
+            onClick={onMedicine}
+            disabled={
+              !save.inventory.some(
+                (i) => i.itemId === "medicine" && i.quantity > 0,
+              )
+            }
+          >
+            使用星光藥盒
+          </button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+function BagPanel({
+  save,
+  setSave,
+  onMedicine,
+  onNotice,
+  onBack,
+}: {
+  save: SaveFile;
+  setSave: React.Dispatch<React.SetStateAction<SaveFile | null>>;
+  onMedicine: () => void;
+  onNotice: (s: string) => void;
+  onBack: () => void;
+}) {
+  const [selected, setSelected] = useState(save.album[0] ?? "stardust-egg"),
+    held = save.inventory.filter((i) => i.quantity > 0),
+    detail = bySpecies(selected),
+    entry = save.albumEntries.find((a) => a.speciesId === selected);
+  const plant = () => {
+    const r = placePlant(save);
+    setSave(r.save);
+    onNotice(r.reason);
+  };
+  return (
+    <Panel title="背包、裝飾與圖鑑" eyebrow="COLLECTION" onBack={onBack}>
+      <h3 className="section-title">
+        背包物品 <small>{held.reduce((a, b) => a + b.quantity, 0)} 件</small>
+      </h3>
+      <div className="bag-list v2">
+        {held.map((i) => {
+          const item = byShopItem(i.itemId);
+          return (
+            <div key={i.id}>
+              <span>{item?.icon ?? "✦"}</span>
+              <b>
+                {item?.name ?? i.itemId}
+                <small>
+                  {item?.useAt}
+                  <br />
+                  {item ? itemUseReason(save, item) : ""}
+                </small>
+              </b>
+              <em>× {i.quantity}</em>
+              {i.itemId === "medicine" && (
+                <button
+                  onClick={onMedicine}
+                  disabled={!save.pet.isSick && !save.pet.emergencySince}
+                >
+                  使用
+                </button>
+              )}
+              {i.itemId === "plant" && (
+                <button onClick={plant} disabled={save.plantState.placed}>
+                  放房間
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <h3 className="section-title">永久裝飾</h3>
+      <div className="decor-list">
+        {["wallpaper", "nightlight"].map((id) => {
+          const item = byShopItem(id)!,
+            owned = save.unlockedDecor.includes(id),
+            equipped = save.equippedDecor.includes(id);
+          return (
+            <button
+              key={id}
+              disabled={!owned}
+              onClick={() => setSave(equipDecor(save, id))}
+            >
+              <i>{item.icon}</i>
+              <b>{item.name}</b>
+              <small>
+                {owned
+                  ? equipped
+                    ? "已裝備 · 點擊移除"
+                    : "已擁有 · 點擊裝備"
+                  : "尚未擁有"}
+              </small>
+            </button>
+          );
+        })}
+      </div>
+      <h3 className="section-title">
+        進化圖鑑{" "}
+        <small>
+          {save.album.length}/{species.length}
+        </small>
+      </h3>
+      <div className="album v2">
+        {species.map((s) => (
+          <button
+            key={s.id}
+            className={
+              save.album.includes(s.id) && selected === s.id
+                ? "selected"
+                : save.album.includes(s.id)
+                  ? ""
+                  : "locked"
+            }
+            onClick={() => setSelected(s.id)}
+          >
+            <SpeciesPreviewCanvas
+              speciesId={s.id}
+              silhouette={!save.album.includes(s.id)}
+              size={62}
+            />
+            <b>{save.album.includes(s.id) ? s.name : "神秘形態"}</b>
+          </button>
+        ))}
+      </div>
+      <div className="album-detail">
+        <SpeciesPreviewCanvas
+          speciesId={detail.id}
+          silhouette={!save.album.includes(detail.id)}
+          size={118}
+        />
+        <div>
+          <h3>{save.album.includes(detail.id) ? detail.name : "尚未解鎖"}</h3>
+          <p>
+            {stageLabel(detail.stage)} · {detail.personality} · 喜歡{" "}
+            {detail.favoriteFood}／{detail.favoriteGift}
+          </p>
+          <p>
+            來源：
+            {detail.from.length
+              ? detail.from.map((x) => bySpecies(x).name).join("、")
+              : "星光起點"}
+            <br />
+            {detail.hint}
+          </p>
+          {entry && (
+            <small>
+              首次解鎖：{new Date(entry.unlockedAt).toLocaleDateString("zh-HK")}{" "}
+              · 曾養成 {entry.raisedCount} 次
+            </small>
+          )}
+        </div>
+      </div>
+      <h3 className="section-title">
+        星光紀念冊 <small>{save.game.history.length} 代</small>
+      </h3>
+      <div className="memorial-list">
+        {save.game.history.map((h) => (
+          <div key={h.bornAt}>
+            <SpeciesPreviewCanvas speciesId={h.speciesId} size={54} />
+            <b>{h.name}</b>
+            <small>
+              {h.careGrade}照顧 ·{" "}
+              {h.departureReason === "natural"
+                ? "自然化成星光"
+                : "在陪伴中離去"}
+            </small>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+function SocialPanel({
+  save,
+  stage,
+  onTalk,
+  onGift,
+  onPropose,
+  onCoPlay,
+  onReply,
+  onBack,
+}: {
+  save: SaveFile;
+  stage: NpcStage;
+  onTalk: (id: string) => void;
+  onGift: (id: string, g: string) => void;
+  onPropose: (id: string) => void;
+  onCoPlay: (id: string) => void;
+  onReply: (id: string) => void;
+  onBack: () => void;
+}) {
+  const [selected, setSelected] = useState("aro"),
+    [gift, setGift] = useState(""),
+    npc = npcs.find((n) => n.id === selected)!,
+    rel = save.relationships.find((r) => r.npcId === selected)!;
+  if (save.pet.stage === "egg")
+    return (
+      <EmptyPanel
+        title="星塵蛋還未認識朋友"
+        text="孵化成嬰兒後，六位星光朋友會以嬰兒造型前來相遇。"
+        action="回到房間"
+        onAction={onBack}
+      />
+    );
+  const look = npc.looks[stage],
+    next =
+      rel.affection >= 95
+        ? 0
+        : [20, 40, 60, 80, 95].find((x) => x > rel.affection)! - rel.affection,
+    hasRing = save.inventory.some((i) => i.itemId === "ring" && i.quantity > 0),
+    proposalReady = canMarry(save.pet, rel, hasRing),
+    proposalReason = itemUseReason(save, byShopItem("ring")!),
+    coPlayReady =
+      ["aro", "pico"].includes(npc.id) &&
+      save.inventory.some((i) => i.itemId === "token" && i.quantity > 0);
+  return (
+    <Panel
+      title="星光朋友圈"
+      eyebrow={`${stage.toUpperCase()} FRIENDS`}
+      onBack={onBack}
+    >
+      <SocialFeed
+        save={save}
+        onReply={onReply}
+        onGift={(id) => setSelected(id)}
+        onPlay={onCoPlay}
+      />
+      <div className="npc-tabs">
+        {npcs.map((n) => (
+          <button
+            className={selected === n.id ? "active" : ""}
+            onClick={() => setSelected(n.id)}
+            key={n.id}
+          >
+            <NpcPreviewCanvas npcId={n.id} stage={stage} size={44} />
+            <span>
+              {n.name}
+              <small>{n.looks[stage].name}</small>
+            </span>
+          </button>
+        ))}
+      </div>
+      <div className="npc-detail">
+        <NpcPreviewCanvas
+          npcId={npc.id}
+          stage={stage}
+          size={230}
+          animation="talk"
+        />
+        <div className="npc-copy">
+          <p className="eyebrow">
+            {npc.personality} · {relationLabel(rel.affection)}
+          </p>
+          <h3>
+            {npc.name} <small>{look.name}</small>
+          </h3>
+          <blockquote>
+            「
+            {
+              look.dialogue[
+                Math.floor(Date.now() / 86400000) % look.dialogue.length
+              ]
+            }
+            」
+          </blockquote>
+          <p className="npc-preference">
+            {look.feature} · {look.preference}
+          </p>
+          <div className="rel-bar">
+            <i style={{ width: `${rel.affection}%` }} />
+            <span>
+              朋友好感度 {rel.affection}/100{" "}
+              {next ? `· 下一階段還差 ${next}` : "· 可以求婚"}
+            </span>
+          </div>
+          <div className="social-actions">
+            <button onClick={() => onTalk(npc.id)}>今日對話</button>
+            <select value={gift} onChange={(e) => setGift(e.target.value)}>
+              <option value="">選擇禮物…</option>
+              {gifts.map((g) => (
+                <option
+                  key={g.id}
+                  value={g.id}
+                  disabled={
+                    !save.inventory.some(
+                      (i) => i.itemId === g.id && i.quantity > 0,
+                    )
+                  }
+                >
+                  {g.name}
+                </option>
+              ))}
+            </select>
+            <button
+              disabled={!gift}
+              title={!gift ? "先選擇背包內的禮物。" : undefined}
+              onClick={() => {
+                onGift(npc.id, gift);
+                setGift("");
+              }}
+            >
+              送禮
+            </button>
+            <button
+              disabled={!coPlayReady}
+              title={
+                !coPlayReady
+                  ? "只有阿洛或皮可可使用，而且需要遊戲代幣。"
+                  : undefined
+              }
+              onClick={() => onCoPlay(npc.id)}
+            >
+              ◎ 朋友同玩
+            </button>
+            <button
+              className="proposal"
+              disabled={!proposalReady}
+              title={!proposalReady ? proposalReason : undefined}
+              onClick={() => onPropose(npc.id)}
+            >
+              ◇ 求婚
+            </button>
+          </div>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+function ShopPanel({
+  save,
+  onBuy,
+  onBack,
+}: {
+  save: SaveFile;
+  onBuy: (i: ShopItem) => void;
+  onBack: () => void;
+}) {
+  const [tab, setTab] = useState<"food" | "gift" | "care">("food"),
+    items = shopItems.filter((i) =>
+      tab === "food"
+        ? i.category === "food"
+        : tab === "gift"
+          ? ["gift", "social", "proposal"].includes(i.category)
+          : ["medicine", "decor"].includes(i.category),
+    );
+  return (
+    <Panel title="月光小商店" eyebrow="USABLE ITEMS v2" onBack={onBack}>
+      <div className="shop-head">
+        <div className="tabs">
+          <button
+            className={tab === "food" ? "active" : ""}
+            onClick={() => setTab("food")}
+          >
+            餐點
+          </button>
+          <button
+            className={tab === "gift" ? "active" : ""}
+            onClick={() => setTab("gift")}
+          >
+            禮物與社交
+          </button>
+          <button
+            className={tab === "care" ? "active" : ""}
+            onClick={() => setTab("care")}
+          >
+            照顧與裝飾
+          </button>
+        </div>
+        <b>◆ {save.game.coins}</b>
+      </div>
+      <div className="shop-grid">
+        {items.map((i) => {
+          const owned = i.unique && save.unlockedDecor.includes(i.id),
+            disabled = owned || (i.id === "ring" && !!save.pet.spouseNpcId);
+          return (
+            <article key={i.id}>
+              <span>{i.icon}</span>
+              <div>
+                <h3>{i.name}</h3>
+                <p>
+                  {i.description}
+                  <br />
+                  {i.consumable ? "消耗品" : "永久商品"} · 使用位置：{i.useAt}
+                </p>
+              </div>
+              <button disabled={disabled} onClick={() => onBuy(i)}>
+                {owned ? "已擁有" : `◆ ${i.price}`}
+              </button>
+            </article>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+function SettingsPanel({
+  save,
+  installEvent,
+  setSave,
+  setStarted,
+  onNotice,
+  onBack,
+  syncState,
+  cloudUser,
+  onSync,
+  onRefreshSync,
+}: {
+  save: SaveFile;
+  installEvent: BeforeInstallPromptEvent | null;
+  setSave: React.Dispatch<React.SetStateAction<SaveFile | null>>;
+  setStarted: (b: boolean) => void;
+  onNotice: (s: string) => void;
+  onBack: () => void;
+  syncState: SyncState | null;
+  cloudUser: User | null;
+  onSync: () => Promise<SyncResult>;
+  onRefreshSync: () => void;
+}) {
+  const file = useRef<HTMLInputElement>(null),
+    setting = (k: string, v: unknown) =>
+      setSave((s) => (s ? { ...s, settings: { ...s.settings, [k]: v } } : s));
+  const exportJson = () => {
+    const blob = new Blob(
+        [
+          JSON.stringify(
+            { ...sanitizeSaveForExport(save), exportedAt: Date.now() },
+            null,
+            2,
+          ),
+        ],
+        { type: "application/json" },
+      ),
+      a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `picopals-v3-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  const doImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    try {
+      const data = await importSave(JSON.parse(await f.text()));
+      setSave(data);
+      onNotice(`Schema ${data.schemaVersion} 存檔已驗證並匯入。`);
+    } catch (err) {
+      onNotice(err instanceof Error ? err.message : "存檔無效");
+    }
+  };
+  return (
+    <Panel title="設定與存檔" eyebrow="SCHEMA v3" onBack={onBack}>
+      <div className="settings-list">
+        <section>
+          <h3>外觀</h3>
+          <label>
+            機身主題
+            <select
+              value={String(save.settings.theme)}
+              onChange={(e) => setting("theme", e.target.value)}
+            >
+              {Object.entries(themes).map(([v, n]) => (
+                <option value={v} key={v}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="switch">
+            易讀字體
+            <input
+              type="checkbox"
+              checked={Boolean(save.settings.readable)}
+              onChange={(e) => setting("readable", e.target.checked)}
+            />
+            <i />
+          </label>
+          <label className="switch">
+            高對比模式
+            <input
+              type="checkbox"
+              checked={Boolean(save.settings.highContrast)}
+              onChange={(e) => setting("highContrast", e.target.checked)}
+            />
+            <i />
+          </label>
+        </section>
+        <section>
+          <h3>聲音</h3>
+          <label>
+            音效音量
+            <input
+              type="range"
+              min="0"
+              max="0.35"
+              step="0.01"
+              value={Number(save.settings.volume)}
+              onChange={(e) => setting("volume", Number(e.target.value))}
+            />
+          </label>
+          <p>
+            目前資料版本：Schema v{save.schemaVersion}
+            <br />
+            商品定義：v{save.itemDefinitionsVersion}
+          </p>
+        </section>
+        <section>
+          <h3>PWA 安裝</h3>
+          <p>安裝後可像 App 一樣啟動並離線遊玩。</p>
+          <button
+            disabled={!installEvent}
+            onClick={() => void installEvent?.prompt()}
+          >
+            {installEvent ? "安裝 PicoPals" : "瀏覽器已安裝或暫不支援"}
+          </button>
+        </section>
+        <section>
+          <h3>備份與安全</h3>
+          <div className="button-row">
+            <button onClick={exportJson}>匯出 JSON</button>
+            <button onClick={() => file.current?.click()}>匯入 JSON</button>
+            <button
+              onClick={() =>
+                void restoreSnapshot()
+                  .then((s) => {
+                    setSave(s);
+                    onNotice("已恢復上一個自動快照。");
+                  })
+                  .catch((e) => onNotice(String(e.message)))
+              }
+            >
+              恢復快照
+            </button>
+          </div>
+          <input
+            ref={file}
+            hidden
+            type="file"
+            accept="application/json"
+            onChange={doImport}
+          />
+          <button
+            className="danger"
+            onClick={() => {
+              if (
+                confirm("確定重設？") &&
+                confirm("最後確認：建議先匯出備份。")
+              )
+                void resetDatabase().then(() => {
+                  const s = newSave();
+                  setSave(s);
+                  setStarted(false);
+                });
+            }}
+          >
+            重設遊戲
+          </button>
+        </section>
+      </div>
+      <SyncPanel
+        save={save}
+        state={syncState}
+        user={cloudUser}
+        onToggle={async (enabled) => {
+          setSave((current) =>
+            current
+              ? {
+                  ...current,
+                  settings: { ...current.settings, cloudSyncEnabled: enabled },
+                }
+              : current,
+          );
+          await db.syncState.update("main", {
+            cloudSyncEnabled: enabled,
+            currentUserId: enabled ? cloudUser?.uid : undefined,
+            status: enabled ? "dirty" : "local-only",
+          });
+          onRefreshSync();
+        }}
+        onSync={onSync}
+        onSave={(next) => setSave(next)}
+        onRefresh={onRefreshSync}
+        onNotice={onNotice}
+        onRestartGuide={() =>
+          setSave((current) =>
+            current
+              ? {
+                  ...current,
+                  onboardingProgress: {
+                    active: true,
+                    completed: false,
+                    skipped: false,
+                    step: 0,
+                    completedSteps: [],
+                    rewardClaimed: current.onboardingProgress.rewardClaimed,
+                  },
+                }
+              : current,
+          )
+        }
+      />
+    </Panel>
+  );
+}
+function Onboarding({
+  save,
+  setSave,
+  onStart,
+}: {
+  save: SaveFile;
+  setSave: React.Dispatch<React.SetStateAction<SaveFile | null>>;
+  onStart: () => void;
+}) {
+  const [name, setName] = useState("波波");
+  return (
+    <div className="modal-back">
+      <div className="onboard">
+        <SpeciesPreviewCanvas speciesId="stardust-egg" size={120} />
+        <p className="eyebrow">GENERATION {save.game.generation}</p>
+        <h2>
+          一點星光，
+          <br />
+          一段新的相遇。
+        </h2>
+        {save.legacyTraits.equipped && (
+          <p>
+            上一代留下「{legacyLabel(save.legacyTraits.equipped)}
+            」與純外觀星光。
+          </p>
+        )}
+        <label>
+          萌寵名字
+          <input
+            maxLength={10}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <button
+          className="primary"
+          disabled={!name.trim()}
+          onClick={() => {
+            setSave({ ...save, pet: { ...save.pet, name: name.trim() } });
+            onStart();
+          }}
+        >
+          開始孵蛋 ✦
+        </button>
+      </div>
+    </div>
+  );
+}
+function DepartureModal({
+  save,
+  onRebirth,
+}: {
+  save: SaveFile;
+  onRebirth: () => void;
+}) {
+  const p = save.pet;
+  return (
+    <div className="modal-back">
+      <div className="offline-modal departure">
+        <span>✦</span>
+        <p className="eyebrow">STARLIGHT MEMORIAL</p>
+        <h2>{p.name}化成溫柔星光</h2>
+        <SpeciesPreviewCanvas speciesId={p.speciesId} size={130} />
+        <p>
+          一起生活了約 {formatMinutes(p.ageMinutes)}，最終形態是{" "}
+          {bySpecies(p.speciesId).name}。<br />
+          照顧評分 {Math.round(p.lifetimeCareScore)} ·{" "}
+          {p.departureReason === "natural"
+            ? "自然完成生命旅程"
+            : "經過緊急照顧期後離去"}
+        </p>
+        <p>
+          星星幣、背包、裝飾、圖鑑、成就、紀錄及設定都會保留；婚姻與成長狀態會重設。
+        </p>
+        <button className="primary" onClick={onRebirth}>
+          孵化第 {save.game.generation + 1} 代星塵蛋
+        </button>
+      </div>
+    </div>
+  );
+}
+function OfflineModal({
+  summary,
+  name,
+  onClose,
+}: {
+  summary: OfflineSummary;
+  name: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="modal-back">
+      <div className="offline-modal">
+        <span>☾</span>
+        <p className="eyebrow">WELCOME BACK</p>
+        <h2>你離開了 {formatMinutes(summary.minutes)}</h2>
+        {summary.clockAnomaly && (
+          <p className="warning">偵測到系統時間倒退，年齡沒有倒退。</p>
+        )}
+        <h3>{name} 的離線變化</h3>
+        <dl>
+          <div>
+            <dt>飽足感</dt>
+            <dd>{summary.fullness}</dd>
+          </div>
+          <div>
+            <dt>心情</dt>
+            <dd>{summary.happiness}</dd>
+          </div>
+          <div>
+            <dt>清潔度</dt>
+            <dd>{summary.cleanliness}</dd>
+          </div>
+          <div>
+            <dt>穢物</dt>
+            <dd>+{summary.poops}</dd>
+          </div>
+          {summary.evolutions.map((e) => (
+            <div key={e.at}>
+              <dt>進化</dt>
+              <dd>
+                {bySpecies(e.fromSpeciesId).name} →{" "}
+                {bySpecies(e.toSpeciesId).name}
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <button className="primary" onClick={onClose}>
+          回到萌寵身邊
+        </button>
+      </div>
+    </div>
+  );
+}
+function Panel({
+  title,
+  eyebrow,
+  onBack,
+  children,
+}: {
+  title: string;
+  eyebrow: string;
+  onBack: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <p className="eyebrow">{eyebrow}</p>
+          <h2>{title}</h2>
+        </div>
+        <button className="icon-btn" onClick={onBack} aria-label="返回主畫面">
+          ×
+        </button>
+      </div>
+      {children}
+    </section>
+  );
+}
+function EmptyPanel({
+  title,
+  text,
+  action,
+  onAction,
+}: {
+  title: string;
+  text: string;
+  action: string;
+  onAction: () => void;
+}) {
+  return (
+    <section className="panel empty">
+      <span>☾</span>
+      <h2>{title}</h2>
+      <p>{text}</p>
+      <button className="primary" onClick={onAction}>
+        {action}
+      </button>
+    </section>
+  );
+}
+function Meter({
+  icon,
+  label,
+  value,
+}: {
+  icon: PixelIconName;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div>
+      <span>
+        <PixelIcon name={icon} />
+      </span>
+      <b>{label}</b>
+      <i>
+        <em style={{ width: `${value}%` }} />
+      </i>
+      <small>{Math.round(value)}</small>
+    </div>
+  );
+}
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <span>
+        <b>{label}</b>
+        <em>{Math.round(value)}</em>
+      </span>
+      <i>
+        <b style={{ width: `${value}%` }} />
+      </i>
+      <small>
+        {value < 25 ? "需要照顧" : value < 60 ? "普通" : "狀態良好"}
+      </small>
+    </div>
+  );
+}
+const stageLabel = (s: Stage) =>
+  ({ egg: "蛋", baby: "嬰兒", child: "幼兒", teen: "青少年", adult: "成年" })[
+    s
+  ];
+const lifeLabel = (s: SaveFile["pet"]["lifeStage"]) =>
+  ({ young: "年輕萌寵", mature: "成熟萌寵", senior: "熟齡萌寵" })[s];
+const affectionLevel = (n: number) =>
+  n >= 95
+    ? "永遠的伙伴"
+    : n >= 80
+      ? "深深依戀"
+      : n >= 60
+        ? "親暱伙伴"
+        : n >= 40
+          ? "普通伙伴"
+          : n >= 20
+            ? "開始信任"
+            : "有點害羞";
+const affectionNext = (n: number) =>
+  n >= 95
+    ? "已解鎖最佳傳承"
+    : n >= 80
+      ? `還差 ${95 - n} 解鎖永遠的伙伴`
+      : n >= 60
+        ? `還差 ${80 - n} 提高照顧效果`
+        : n >= 40
+          ? `還差 ${60 - n} 解鎖親暱待機`
+          : n >= 20
+            ? `還差 ${40 - n} 成為普通伙伴`
+            : `還差 ${20 - n} 開始信任`;
+const relationLabel = (n: number) =>
+  n >= 95
+    ? "可以求婚"
+    : n >= 80
+      ? "戀人"
+      : n >= 60
+        ? "心動"
+        : n >= 40
+          ? "好朋友"
+          : n >= 20
+            ? "普通朋友"
+            : "初次認識";
+const legacyLabel = (t: string) =>
+  (
+    ({
+      active: "活力星光",
+      healthy: "健康星光",
+      clean: "潔淨星光",
+      affectionate: "親愛星光",
+      calm: "平靜星光",
+      sweet: "甜蜜星光",
+    }) as Record<string, string>
+  )[t] ?? t;
+const formatMinutes = (m: number) =>
+  m >= 1440
+    ? `${Math.floor(m / 1440)} 日 ${Math.floor((m % 1440) / 60)} 小時`
+    : m >= 60
+      ? `${Math.floor(m / 60)} 小時 ${Math.floor(m % 60)} 分鐘`
+      : `${Math.floor(m)} 分鐘`;
+const greeting = () =>
+  new Date().getHours() < 12
+    ? "早晨"
+    : new Date().getHours() < 18
+      ? "午安"
+      : "晚上好";
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+}

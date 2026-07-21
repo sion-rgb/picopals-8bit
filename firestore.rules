@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function owns(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function validOwner(uid) {
+      return request.resource.data.ownerUid == uid;
+    }
+    function validSave(uid) {
+      return validOwner(uid)
+        && request.resource.data.revision is int
+        && request.resource.data.revision >= 1
+        && request.resource.data.baseRevision is int
+        && request.resource.data.saveSchemaVersion == 3
+        && request.resource.data.syncSchemaVersion == 1
+        && request.resource.data.deviceId is string
+        && request.resource.data.deviceId.size() >= 8
+        && request.resource.data.deviceId.size() <= 100
+        && request.resource.data.saveData is map
+        && request.resource.data.saveData.schemaVersion == 3
+        && request.resource.data.keys().hasOnly([
+          'ownerUid', 'syncSchemaVersion', 'saveSchemaVersion', 'revision',
+          'baseRevision', 'deviceId', 'deviceName', 'clientUpdatedAt',
+          'serverUpdatedAt', 'checksum', 'saveData', 'lastAction', 'appVersion'
+        ]);
+    }
+
+    match /users/{uid} {
+      allow get, create, update, delete: if owns(uid) && validOwner(uid);
+      allow list: if false;
+
+      match /gameSaves/{saveId} {
+        allow get: if owns(uid);
+        allow list: if false;
+        allow create, update: if owns(uid) && saveId == 'main' && validSave(uid);
+        allow delete: if owns(uid) && saveId == 'main';
+      }
+      match /devices/{deviceId} {
+        allow get, create, update, delete: if owns(uid)
+          && validOwner(uid)
+          && request.resource.data.deviceId == deviceId;
+        allow list: if owns(uid);
+      }
+      match /cloudSnapshots/{snapshotId} {
+        allow get, list, create, delete: if owns(uid)
+          && (request.method == 'delete' || validOwner(uid));
+        allow update: if false;
+      }
+      match /syncLogs/{logId} {
+        allow get, list, create, delete: if owns(uid)
+          && (request.method == 'delete' || validOwner(uid));
+        allow update: if false;
+      }
+    }
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

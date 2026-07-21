@@ -200,13 +200,14 @@ export class FirestoreBackend implements CloudBackend {
       "devices",
       state.deviceId,
     );
+    const existing = await getDoc(ref);
     await setDoc(
       ref,
       {
         ownerUid: this.userId,
         deviceId: state.deviceId,
         deviceName: state.deviceName,
-        firstSeenAt: serverTimestamp(),
+        ...(existing.exists() ? {} : { firstSeenAt: serverTimestamp() }),
         lastSeenAt: serverTimestamp(),
         appVersion: "3.0.0",
         platform: navigator.platform?.slice(0, 40) || "browser",

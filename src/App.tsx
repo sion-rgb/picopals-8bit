@@ -49,6 +49,7 @@ import { backendForUser, observeUser } from "./firebase";
 import {
   acquireSyncLock,
   releaseSyncLock,
+  subscribeSync,
   SyncScheduler,
   synchronizeGameSave,
   type SyncResult,
@@ -319,6 +320,16 @@ export function App() {
         });
       }),
     [],
+  );
+  useEffect(
+    () =>
+      subscribeSync(() => {
+        refreshSync();
+        void loadSave().then((next) => {
+          if (next) setSave(next);
+        });
+      }),
+    [refreshSync],
   );
   useEffect(() => {
     void (async () => {

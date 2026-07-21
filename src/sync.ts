@@ -431,6 +431,12 @@ const channel =
     ? new BroadcastChannel("picopals-sync")
     : null;
 export const broadcast = (message: unknown) => channel?.postMessage(message);
+export const subscribeSync = (listener: (message: unknown) => void) => {
+  if (!channel) return () => undefined;
+  const receive = (event: MessageEvent) => listener(event.data);
+  channel.addEventListener("message", receive);
+  return () => channel.removeEventListener("message", receive);
+};
 export async function acquireSyncLock(ownerTabId: string, now = Date.now()) {
   return db.transaction("rw", db.syncLocks, async () => {
     const lock = await db.syncLocks.get("main");
@@ -453,10 +459,21 @@ export const retryDelay = (attempt: number) =>
   [5000, 15000, 30000, 60000, 300000][Math.min(4, Math.max(0, attempt))]!;
 export class SyncScheduler {
   private timer?: ReturnType<typeof setTimeout>;
-  constructor(private run: () => Promise<unknown>) {}
+  private attempts = 0;
+  constructor(private run: () => Promise<SyncResult>) {}
   schedule(delay = 5000) {
     clearTimeout(this.timer);
-    this.timer = setTimeout(() => void this.run(), delay);
+    this.attempts = 0;
+    this.timer = setTimeout(() => void this.execute(), delay);
+  }
+  private async execute() {
+    const result = await this.run();
+    if (result.status === "error" && this.attempts < 5) {
+      const delay = retryDelay(this.attempts++);
+      this.timer = setTimeout(() => void this.execute(), delay);
+    } else if (result.status !== "error") {
+      this.attempts = 0;
+    }
   }
   cancel() {
     clearTimeout(this.timer);
